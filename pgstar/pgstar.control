@@ -1,0 +1,4 @@
+comment = 'pgstar helpers'
+default_version = '1.0.2'
+relocatable = true
+module_pathname = '$libdir/pgstar'
