@@ -1,10 +1,11 @@
 #include "postgres.h"
 
-#include "pgstar.h"
+#include "core/pgstar.h"
+#include "pgstar_version.h"
 
 #include "utils/guc.h"
 
-const char *PGSTAR_VERSION = "v1.0.3";
+const char *PGSTAR_VERSION = PGSTAR_VERSION_STRING;
 int pgstar_port = 5481;
 int pgstar_log_level = INFO;
 char *pgstar_database = "postgres";

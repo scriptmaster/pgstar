@@ -1,6 +1,6 @@
 #include "postgres.h"
 
-#include "pgstar.h"
+#include "core/pgstar.h"
 
 #include "lib/stringinfo.h"
 

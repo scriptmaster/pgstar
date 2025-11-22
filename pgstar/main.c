@@ -6,7 +6,7 @@
 #include "utils/guc.h"
 
 #include "core/worker.h"
-#include "pgstar.h"
+#include "core/pgstar.h"
 
 PG_MODULE_MAGIC;
 
