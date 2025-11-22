@@ -15,7 +15,7 @@ EXT_UNINSTALL_TARGETS := $(addprefix extension-uninstall-,$(EXT_DIRS))
 
 .PHONY: help test extension-build extension-install extension-clean extension-uninstall \
 	extension-build-% extension-install-% extension-clean-% extension-uninstall-% \
-	git-status git-commit git-new-branch-pgstar-http-post
+	git-status git-commit git-new-branch-pgstar-http-post pgstar-symbols
 
 help:
 	@echo "Available targets:"
@@ -92,3 +92,6 @@ git-commit:
 
 git-new-branch-pgstar-http-post:
 	git checkout -b pgstar_http_post
+
+pgstar-symbols:
+	nm -D /usr/lib/postgresql/14/lib/pgstar.so | grep pgstar_http_post || true
