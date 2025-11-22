@@ -27,6 +27,7 @@ help:
 	@echo "Use EXT_DIRS=\"pgstar\" (or legacy EXT_DIR=pgstar) to scope the targets."
 
 test: extension-build
+clean: extension-clean
 
 extension-build: $(EXT_BUILD_TARGETS)
 
@@ -56,7 +57,10 @@ install: extension-install-pgstar
 
 # auto: auto-build auto-run
 
-build-install-run: build install run
+restart:
+	systemctl restart postgresql
+
+build-install-run: build install restart run
 
 auto-build-run:
 	find . -name "*.c" -o -name "*.sql"  -o -name ".env" | entr -s 'make build-install-run'
