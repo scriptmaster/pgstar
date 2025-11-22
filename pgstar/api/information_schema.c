@@ -6,7 +6,7 @@
 #include "utils/snapmgr.h"
 #include "lib/stringinfo.h"
 
-#include "core/pgstar.h"
+#include "pgstar.h"
 
 char *
 pgstar_json_schemata(void)

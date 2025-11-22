@@ -32,7 +32,11 @@ pgstar_parse_http_request(const char *buf, ssize_t len, PgstarRequest *req)
 	memcpy(line, buf, line_len);
 	line[line_len] = '\0';
 
-	if (sscanf(line, "%7s %255s", req->method, req->path) != 2)
+	if (sscanf(line, "%7s %255s", req->method, req->uri) != 2)
+		return false;
+
+	/* Split uri into path/query/hash */
+	if (!pgstar_parse_uri(req->uri, req))
 		return false;
 
 	return true;
@@ -42,12 +46,18 @@ void
 pgstar_http_request_handle(int client_fd, const char *peek_buf, ssize_t peek_len)
 {
 	StringInfoData request;
-	char		buf[1024];
+	char		buf[32768]; /* 32KB chunks */
 	ssize_t		nread;
+	const size_t max_request_size = 256 * 1024; /* hard cap */
+	bool		header_done = false;
+	int			content_length = 0;
+	int			header_bytes = 0;
 	PgstarRequest req;
 	PgstarResponse resp;
 
 	initStringInfo(&request);
+	/* Pre-allocate enough space for typical GET headers (~8KB) */
+	enlargeStringInfo(&request, 8192);
 
 	if (peek_buf && peek_len > 0)
 		appendBinaryStringInfo(&request, peek_buf, peek_len);
@@ -58,7 +68,53 @@ pgstar_http_request_handle(int client_fd, const char *peek_buf, ssize_t peek_len
 		if (nread <= 0)
 			break;
 		appendBinaryStringInfo(&request, buf, nread);
-		if (strstr(request.data, "\r\n\r\n") != NULL)
+
+		/* Guard against overly large requests (mainly POST bodies) */
+		if (request.len >= max_request_size)
+		{
+			elog(WARNING, "pgstar: request exceeded %zu bytes, aborting", max_request_size);
+			break;
+		}
+
+		/* Once we have headers, extract Content-Length if present */
+		if (!header_done)
+		{
+			char   *header_end = strstr(request.data, "\r\n\r\n");
+
+			if (header_end != NULL)
+			{
+				char   *p = request.data;
+
+				header_done = true;
+				header_bytes = (int) ((header_end - request.data) + 4);
+
+				while (p < header_end)
+				{
+					if (pg_strncasecmp(p, "Content-Length:", 15) == 0)
+					{
+						long		v;
+
+						p += 15;
+						while (p < header_end && (*p == ' ' || *p == '\t'))
+							p++;
+
+						v = strtol(p, NULL, 10);
+						if (v > 0 && v < (long) max_request_size)
+							content_length = (int) v;
+						break;
+					}
+
+					/* advance to next line */
+					p = strchr(p, '\n');
+					if (p == NULL || p >= header_end)
+						break;
+					p++;
+				}
+			}
+		}
+
+		/* Stop when we've read headers + full body (if any) */
+		if (header_done && request.len >= header_bytes + content_length)
 			break;
 	}
 
@@ -87,9 +143,11 @@ pgstar_http_request_handle(int client_fd, const char *peek_buf, ssize_t peek_len
 	}
 
 	pgstar_http_send_response(client_fd, &resp);
+
 	if (resp.body)
 		pfree(resp.body);
+	if (resp.log)
+		pfree(resp.log);
 
 	pfree(request.data);
-	close(client_fd);
 }

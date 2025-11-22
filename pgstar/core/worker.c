@@ -3,7 +3,7 @@
 #include "core/signals.h"
 #include "core/spi.h"
 #include "core/worker.h"
-#include "core/pgstar.h"
+#include "pgstar.h"
 #include "tcp/socket.h"
 
 #include "libpq/pqsignal.h"

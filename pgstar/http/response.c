@@ -1,6 +1,6 @@
 #include "postgres.h"
 
-#include "core/pgstar.h"
+#include "pgstar.h"
 
 #include "lib/stringinfo.h"
 #include "storage/fd.h"
@@ -20,20 +20,39 @@ pgstar_http_send_response(int client_fd, PgstarResponse *resp)
     struct iovec iov[2];
     int     iovcnt;
     ssize_t written;
+    int     n;
 
-    int n = snprintf(header, sizeof(header),
-                     "HTTP/1.1 %d %s\r\n"
-                     "Content-Type: %s\r\n"
-                     "Content-Length: %zu\r\n"
-                     "Connection: close\r\n"
-                     "\r\n",
-                     resp->status_code,
-                     resp->status_text ? resp->status_text : "",
-                     resp->content_type ? resp->content_type : "text/plain",
-                     body_len);
+    n = snprintf(header, sizeof(header),
+                 "HTTP/1.1 %d %s\r\n"
+                 "Content-Type: %s\r\n"
+                 "Content-Length: %zu\r\n",
+                 resp->status_code,
+                 resp->status_text ? resp->status_text : "",
+                 resp->content_type ? resp->content_type : "text/plain",
+                 body_len);
 
-    if (n <= 0)
+    if (n <= 0 || (size_t)n >= sizeof(header))
         return;
+
+    /* Optional X-Log header */
+    if (resp->log && resp->log[0] != '\0')
+    {
+        int m = snprintf(header + n, sizeof(header) - (size_t)n,
+                         "X-Log: %s\r\n", resp->log);
+        if (m <= 0 || (size_t)m >= sizeof(header) - (size_t)n)
+            return;
+        n += m;
+    }
+
+    /* Final connection header and blank line */
+    {
+        int m = snprintf(header + n, sizeof(header) - (size_t)n,
+                         "Connection: close\r\n"
+                         "\r\n");
+        if (m <= 0 || (size_t)m >= sizeof(header) - (size_t)n)
+            return;
+        n += m;
+    }
 
     iov[0].iov_base = header;
     iov[0].iov_len  = (size_t)n;
@@ -63,6 +82,8 @@ pgstar_http_send_json(int client_fd, int status_code,
     pgstar_http_send_response(client_fd, &resp);
     if (resp.body)
         pfree(resp.body);
+    if (resp.log)
+        pfree(resp.log);
 }
 
 void
@@ -91,6 +112,8 @@ pgstar_http_send_500(int client_fd, const char *msg)
 
     pgstar_http_send_response(client_fd, &resp);
     pfree(buf.data);
+    if (resp.log)
+        pfree(resp.log);
 }
 
 void

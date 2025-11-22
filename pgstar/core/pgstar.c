@@ -1,6 +1,6 @@
 #include "postgres.h"
 
-#include "core/pgstar.h"
+#include "pgstar.h"
 #include "pgstar_version.h"
 
 #include "utils/guc.h"

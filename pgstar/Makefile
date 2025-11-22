@@ -8,20 +8,9 @@ VERSION_HEADER := $(GENERATED_DIR)/pgstar_version.h
 
 PG_CPPFLAGS += -I$(GENERATED_DIR) -Icore
 
-OBJS = main.o \
-	core/pgstar.o \
-	core/env.o \
-	core/stat.o \
-	core/spi.o \
-	core/signals.o \
-	core/worker.o \
-	api/information_schema.o \
-	tcp/socket.o \
-	tcp/protocol.o \
-	tcp/protocols/other.o \
-	http/request.o \
-	http/response.o \
-	http/router.o
+# Automatically include all C files in the extension tree
+SRCS := $(wildcard *.c core/*.c api/*.c tcp/*.c tcp/protocols/*.c http/*.c)
+OBJS := $(SRCS:.c=.o)
 DATA = pgstar--1.0.sql
 PGFILEDESC = "pgstar - mock server helpers and version reporting"
 

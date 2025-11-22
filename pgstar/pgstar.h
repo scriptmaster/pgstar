@@ -21,7 +21,10 @@ char *pgstar_json_tables(void);
 typedef struct PgstarRequest
 {
 	char	method[8];
-	char	path[256];
+	char	uri[256];		/* raw path+query+fragment */
+	char	path[256];		/* path without query/fragment */
+	char	query[256];		/* portion after '?' (no '#') */
+	char	hash[128];		/* fragment (after '#') */
 } PgstarRequest;
 
 typedef struct PgstarResponse
@@ -30,10 +33,15 @@ typedef struct PgstarResponse
 	const char *status_text;
 	const char *content_type;
 	char	   *body;			/* palloc'd, may be NULL */
+	char	   *log;			/* optional X-Log header value */
 } PgstarResponse;
 
 bool pgstar_parse_http_request(const char *buf, ssize_t len,
 							   PgstarRequest *req);
+bool pgstar_parse_uri(const char *uri, PgstarRequest *req);
+int  pgstar_split_path_segments(const char *path, char segments[][64], int max_segments);
+bool pgstar_get_query_param(const char *query, const char *key,
+							char *value, size_t value_len);
 
 /* Response helpers */
 void pgstar_http_send_response(int client_fd, PgstarResponse *resp);
@@ -47,6 +55,10 @@ void pgstar_http_send_html_file(int client_fd, const char *filepath);
 
 /* Router */
 void pgstar_route_request(const PgstarRequest *req, PgstarResponse *resp);
+void pgstar_route_api(const PgstarRequest *req, PgstarResponse *resp);
+void pgstar_route_ai(const PgstarRequest *req, PgstarResponse *resp);
+void pgstar_route_static(const PgstarRequest *req, PgstarResponse *resp);
+void pgstar_route_pgstar(const PgstarRequest *req, PgstarResponse *resp);
 
 #endif /* PGSTAR_H */
 

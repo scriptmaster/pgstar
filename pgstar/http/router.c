@@ -1,7 +1,6 @@
 #include "postgres.h"
 
-#include "core/pgstar.h"
-
+#include "pgstar.h"
 #include "lib/stringinfo.h"
 
 #include <string.h>
@@ -20,83 +19,58 @@ pgstar_route_request(const PgstarRequest *req, PgstarResponse *resp)
 		return;
 	}
 
-	if (strcmp(req->method, "GET") != 0)
-	{
-		resp->status_code = 405;
-		resp->status_text = "Method Not Allowed";
-		resp->content_type = "application/json";
-		resp->body = pstrdup("{\"error\":\"method not allowed\"}\n");
-		return;
-	}
+	/* Always capture a simple log line for X-Log header */
+	resp->log = psprintf("method=%s uri=%s path=%s",
+						 req->method,
+						 req->uri,
+						 req->path);
 
+	/* Root requires GET */
 	if (strcmp(req->path, "/") == 0)
 	{
 		resp->status_code = 200;
 		resp->status_text = "OK";
 		resp->content_type = "application/json";
-		resp->body = pstrdup("{\"service\":\"pgstar\",\"status\":\"ok\"}\n");
+		resp->body = psprintf("{\"service\":\"pgstar\",\"status\":\"ok\",\"version\":\"%s\"}\n",
+							  PGSTAR_VERSION);
+		return;
 	}
-	else if (strcmp(req->path, "/pgstar/version") == 0)
+	else
+	if (strncmp(req->path, "/pgstar/", 8) == 0)
 	{
-		StringInfoData buf;
-
-		initStringInfo(&buf);
-		appendStringInfo(&buf,
-						 "{\"service\":\"pgstar\",\"version\":\"%s\"}\n",
-						 PGSTAR_VERSION);
-
-		resp->status_code = 200;
-		resp->status_text = "OK";
-		resp->content_type = "application/json";
-		resp->body = buf.data;
+		pgstar_route_pgstar(req, resp);
+		return;
 	}
-	else if (strcmp(req->path, "/api/information_schema/schemata") == 0)
+	else
+	/* /api/ allows both GET and POST (and potentially others) */
+	if (strncmp(req->path, "/api/", 5) == 0)
 	{
-		char	   *json = NULL;
-
-		PG_TRY();
-		{
-			json = pgstar_json_schemata();
-			resp->status_code = 200;
-			resp->status_text = "OK";
-			resp->content_type = "application/json";
-			resp->body = json;
-		}
-		PG_CATCH();
-		{
-			FlushErrorState();
-			if (json)
-				pfree(json);
-			resp->status_code = 500;
-			resp->status_text = "Internal Server Error";
-			resp->content_type = "application/json";
-			resp->body = pstrdup("{\"error\":\"schemata query failed\"}\n");
-		}
-		PG_END_TRY();
+		pgstar_route_api(req, resp);
+		return;
 	}
-	else if (strcmp(req->path, "/api/information_schema/tables") == 0)
+	else
+	/* /ai/ is delegated to the AI router; methods are not restricted here */
+	if (strncmp(req->path, "/ai/", 4) == 0)
 	{
-		char	   *json = NULL;
-
-		PG_TRY();
+		pgstar_route_ai(req, resp);
+		return;
+	}
+	else
+	/* /static/ disallows POST, other methods are passed through */
+	if (strncmp(req->path, "/static/", 8) == 0)
+	{
+		if (pg_strcasecmp(req->method, "POST") == 0)
 		{
-			json = pgstar_json_tables();
-			resp->status_code = 200;
-			resp->status_text = "OK";
+			resp->status_code = 405;
+			resp->status_text = "Method Not Allowed";
 			resp->content_type = "application/json";
-			resp->body = json;
+			resp->body = pstrdup("{\"error\":\"method not allowed\"}\n");
 		}
-		PG_CATCH();
+		else
 		{
-			FlushErrorState();
-			if (json)
-				pfree(json);
-			resp->status_code = 500;
-			resp->status_text = "Internal Server Error";
-			resp->content_type = "application/json";
-			resp->body = pstrdup("{\"error\":\"tables query failed\"}\n");
+			pgstar_route_static(req, resp);
 		}
-		PG_END_TRY();
+		return;
 	}
 	else
 	{

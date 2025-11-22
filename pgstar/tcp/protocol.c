@@ -25,25 +25,34 @@ pgstar_tcp_protocol_route(int client_fd)
 	char		peek[PGSTAR_PROTOCOL_PEEK];
 	ssize_t		received;
 
-	if (!pgstar_tcp_protocol_wait_for_data(client_fd))
+	for (;;)
 	{
-		pgstar_other_protocol_handle(client_fd, NULL, 0);
-		return;
-	}
+		if (!pgstar_tcp_protocol_wait_for_data(client_fd))
+		{
+			close(client_fd);
+			return;
+		}
 
-	received = recv(client_fd, peek, sizeof(peek) - 1, MSG_PEEK);
-	if (received <= 0)
-	{
-		pgstar_other_protocol_handle(client_fd, NULL, 0);
-		return;
-	}
+		received = recv(client_fd, peek, sizeof(peek) - 1, MSG_PEEK);
+		if (received <= 0)
+		{
+			close(client_fd);
+			return;
+		}
 
-	peek[received] = '\0';
+		peek[received] = '\0';
 
-	if (pgstar_tcp_protocol_is_http(peek, received))
-		pgstar_http_request_handle(client_fd, peek, received);
-	else
+		if (pgstar_tcp_protocol_is_http(peek, received))
+		{
+			pgstar_http_request_handle(client_fd, peek, received);
+			/* loop again to support HTTP keep-alive */
+			continue;
+		}
+
+		/* Not HTTP: delegate once and close */
 		pgstar_other_protocol_handle(client_fd, peek, received);
+		return;
+	}
 }
 
 static bool

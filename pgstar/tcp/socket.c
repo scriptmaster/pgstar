@@ -2,7 +2,7 @@
 
 #include "tcp/socket.h"
 
-#include "core/pgstar.h"
+#include "pgstar.h"
 #include "tcp/protocol.h"
 
 #include <errno.h>
