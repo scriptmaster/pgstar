@@ -76,12 +76,8 @@ pgstar_http_get(PG_FUNCTION_ARGS)
 		path_start = host_end;
 	}
 
-<<<<<<< HEAD
-	if ((host_end - host_start) <= 0 || (host_end - host_start) >= (int) sizeof(host))
-=======
 	if ((host_end - host_start) <= 0 ||
 		(host_end - host_start) >= (int) sizeof(host))
->>>>>>> pgstar_jobs
 		ereport(ERROR,
 				(errmsg("pgstar_http_get: invalid or too long host in URL")));
 
@@ -118,11 +114,7 @@ pgstar_http_get(PG_FUNCTION_ARGS)
 	appendStringInfoString(&reqbuf, "Connection: close\r\n");
 
 	if (headers != NULL)
-<<<<<<< HEAD
-		pgstar_append_headers_from_jsonb(&reqbuf, headers);
-=======
 		pgstar_http_append_headers_from_jsonb(&reqbuf, headers);
->>>>>>> pgstar_jobs
 
 	appendStringInfoString(&reqbuf, "\r\n");
 
@@ -155,12 +147,8 @@ pgstar_http_get(PG_FUNCTION_ARGS)
 
 		if (sockfd < 0)
 			ereport(ERROR,
-<<<<<<< HEAD
-					(errmsg("pgstar_http_get: could not connect to %s:%s", host, portstr)));
-=======
 					(errmsg("pgstar_http_get: could not connect to %s:%s",
 							host, portstr)));
->>>>>>> pgstar_jobs
 
 		/* Send full request */
 		{
@@ -242,11 +230,7 @@ pgstar_http_get(PG_FUNCTION_ARGS)
 }
 
 static void
-<<<<<<< HEAD
-pgstar_append_headers_from_jsonb(StringInfo buf, Jsonb *jb)
-=======
 pgstar_http_append_headers_from_jsonb(StringInfo buf, Jsonb *jb)
->>>>>>> pgstar_jobs
 {
 	JsonbIterator *it;
 	JsonbValue	v;
@@ -288,8 +272,3 @@ pgstar_http_append_headers_from_jsonb(StringInfo buf, Jsonb *jb)
 	if (current_key)
 		pfree(current_key);
 }
-<<<<<<< HEAD
-=======
-
-
->>>>>>> pgstar_jobs
