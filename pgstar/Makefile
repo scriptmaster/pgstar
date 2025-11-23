@@ -6,6 +6,9 @@ OBJS = main.o \
 	core/spi.o \
 	core/signals.o \
 	core/worker.o \
+	functions/pgstar_http_post.o \
+	functions/pgstar_http_get.o \
+	functions/pgstar_jobs.o \
 	tcp/socket.o \
 	tcp/protocol.o \
 	tcp/protocols/other.o \
@@ -16,4 +19,3 @@ PGFILEDESC = "pgstar - mock server helpers and version reporting"
 PG_CONFIG = pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
-

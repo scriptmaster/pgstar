@@ -27,6 +27,9 @@ help:
 	@echo "Use EXT_DIRS=\"pgstar\" (or legacy EXT_DIR=pgstar) to scope the targets."
 
 test: extension-build
+clean:
+	mkdir -p bin/
+	make extension-clean
 
 extension-build: $(EXT_BUILD_TARGETS)
 
