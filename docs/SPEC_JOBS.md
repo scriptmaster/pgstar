@@ -250,3 +250,60 @@ flowchart TD
   E --> F[CREATE TABLE IF NOT EXISTS pgstar.jobs]
   E --> G[CREATE TABLE IF NOT EXISTS pgstar.job_runs]
 ```
+
+### Jobs execution engine
+
+There are two intended ways to execute work described by `pgstar.jobs`:
+
+- **External orchestrator (recommended for complex flows)**:
+  - **Select** from `pgstar.jobs` to discover pending work.
+  - **Execute** the `given_stmt` for appropriate key ranges and batches:
+    - Use `start_range`, `end_range`, and `range_direction` to drive your own
+      paging logic.
+    - It is common to encode the range window as parameters `$1` / `$2` in
+      `given_stmt` and call it through SQL or `/api/exec`.
+  - **Record progress** by:
+    - Incrementing `pgstar.jobs.records_processed` and updating
+      `last_record`, `last_updated_time`, `completed_time`.
+    - Appending rows to `pgstar.job_runs` with the concrete execution slices.
+
+- **Built‑in background worker (simple run‑once executor)**:
+  - Implemented in `core/jobs_worker.c` and registered from `pgstar/main.c`
+    as the `pgstar jobs executor` background worker.
+  - **Scope**:
+    - Only handles `job_type = 'run_once'` jobs.
+    - Treats each job as a **single execution of `given_stmt`** over the
+      configured `[start_range, end_range]` window.
+    - Assumes `given_stmt` accepts two numeric parameters `$1` and `$2` for
+      the window bounds (they map to `start_range` and `end_range`).
+  - **Execution flow per job**:
+    1. Select *one* pending `run_once` job:
+       - `completed_time IS NULL`.
+       - Ordered by `start_time`.
+       - Locked with `FOR UPDATE SKIP LOCKED` so future multi‑worker
+         designs can coexist.
+    2. Execute `given_stmt` via SPI:
+       - Called as `given_stmt($1 := start_range, $2 := end_range)` using
+         `SPI_execute_with_args(...)`.
+       - Uses `batch_count` as the `tcount` hint to SPI, which limits the
+         number of processed rows for `SELECT`‑like statements.
+    3. Insert a row into `pgstar.job_runs`:
+       - Copies `job_id`, `table_name`, `key_column`, `start_range` and
+         `parameters`.
+       - Sets `records_retrieved` / `records_processed` to `SPI_processed`.
+       - Stores the executed SQL text in `executed_stmt`.
+       - Records the previous `completed_time` (if any) in
+         `previous_completion`.
+    4. Update the parent `pgstar.jobs` row:
+       - `records_processed` is incremented by `SPI_processed`.
+       - `last_updated_time` is set to `now()`.
+       - `completed_time` is set to `now()` (the built‑in worker treats
+         `run_once` jobs as fully completed after a single execution).
+  - **Limitations / design notes**:
+    - The built‑in worker **does not** currently:
+      - Update `last_record`.
+      - Split work into multiple `job_runs` batches for a single job.
+      - Interpret `cron` or `continuous` jobs.
+    - For advanced scheduling, true batching, and resumable windows, use an
+      external orchestrator that builds on the same metadata and helper
+      functions.

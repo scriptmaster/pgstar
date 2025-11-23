@@ -16,7 +16,8 @@ EXT_UNINSTALL_TARGETS := $(addprefix extension-uninstall-,$(EXT_DIRS))
 .PHONY: help test extension-build extension-install extension-clean extension-uninstall \
 	extension-build-% extension-install-% extension-clean-% extension-uninstall-% \
 	git-status git-checkout-main git-merge-pgstar_http_post git-merge-pgstar_jobs git-commit \
-	git-new-branch-pgstar-http-post pgstar-symbols run-locations-sync2025
+	git-new-branch-pgstar-http-post git-new-branch-exec-jobs git-commit-exec-jobs \
+	pgstar-symbols run-locations-sync2025
 
 help:
 	@echo "Available targets:"
@@ -106,6 +107,13 @@ git-commit:
 
 git-new-branch-pgstar-http-post:
 	git checkout -b pgstar_http_post
+
+git-new-branch-exec-jobs:
+	git checkout -b exec_jobs
+
+git-commit-exec-jobs:
+	git add -A
+	git commit -m "feat: add pgstar jobs executor worker"
 
 pgstar-symbols:
 	nm -D /usr/lib/postgresql/14/lib/pgstar.so | grep pgstar_http_post || true

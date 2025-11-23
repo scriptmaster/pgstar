@@ -6,6 +6,7 @@
 #include "utils/guc.h"
 
 #include "core/worker.h"
+#include "core/jobs_worker.h"
 #include "pgstar.h"
 
 PG_MODULE_MAGIC;
@@ -23,6 +24,7 @@ void
 _PG_init(void)
 {
 	BackgroundWorker worker;
+	BackgroundWorker jobs_worker;
 
 	pgstar_define_gucs();
 
@@ -40,4 +42,20 @@ _PG_init(void)
 	worker.bgw_notify_pid = 0;
 
 	RegisterBackgroundWorker(&worker);
+
+	/*
+	 * Dedicated jobs executor worker. This keeps HTTP request handling and
+	 * job execution separate so that long-running jobs do not block HTTP.
+	 */
+	MemSet(&jobs_worker, 0, sizeof(jobs_worker));
+	jobs_worker.bgw_flags = BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION;
+	jobs_worker.bgw_start_time = BgWorkerStart_ConsistentState;
+	jobs_worker.bgw_restart_time = 10;
+	snprintf(jobs_worker.bgw_name, BGW_MAXLEN, "pgstar jobs executor");
+	snprintf(jobs_worker.bgw_library_name, BGW_MAXLEN, "pgstar");
+	snprintf(jobs_worker.bgw_function_name, BGW_MAXLEN, "pgstar_jobs_worker");
+	jobs_worker.bgw_main_arg = (Datum) 0;
+	jobs_worker.bgw_notify_pid = 0;
+
+	RegisterBackgroundWorker(&jobs_worker);
 }

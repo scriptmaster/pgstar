@@ -4,6 +4,7 @@
 #include "postgres.h"
 
 void pgstar_worker(Datum main_arg);
+void pgstar_jobs_worker(Datum main_arg);
 
 #endif /* PGSTAR_CORE_WORKER_H */
 
