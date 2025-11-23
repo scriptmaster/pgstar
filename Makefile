@@ -16,7 +16,7 @@ EXT_UNINSTALL_TARGETS := $(addprefix extension-uninstall-,$(EXT_DIRS))
 .PHONY: help test extension-build extension-install extension-clean extension-uninstall \
 	extension-build-% extension-install-% extension-clean-% extension-uninstall-% \
 	git-status git-checkout-main git-merge-pgstar_http_post git-merge-pgstar_jobs git-commit \
-	git-new-branch-pgstar-http-post pgstar-symbols
+	git-new-branch-pgstar-http-post pgstar-symbols run-locations-sync2025
 
 help:
 	@echo "Available targets:"
@@ -25,6 +25,7 @@ help:
 	@echo "  make extension-install    # Install the extensions via pg_config/PGXS"
 	@echo "  make extension-clean      # Clean build artifacts"
 	@echo "  make extension-uninstall  # Remove the installed extension binaries"
+	@echo "  make run-locations-sync2025  # Configure FDW + register telemetry->locations2025 job"
 	@echo ""
 	@echo "Use EXT_DIRS=\"pgstar\" (or legacy EXT_DIR=pgstar) to scope the targets."
 
@@ -77,6 +78,9 @@ run:
 
 run1:
 	sudo -u postgres psql -f ./run.sql
+
+run-locations-sync2025:
+	PGPASSWORD="pgstar" psql -U pgstar -d pgstar -h localhost -f ./start_locations_sync2025.sql
 
 psql:
 	PGPASSWORD="pgstar" psql -U pgstar -d pgstar -h localhost

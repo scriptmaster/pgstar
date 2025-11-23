@@ -10,6 +10,7 @@ int pgstar_port = 5481;
 int pgstar_log_level = INFO;
 char *pgstar_database = "postgres";
 char *pgstar_user = NULL;
+int pgstar_ui_cache_ttl = 5;
 
 static const struct config_enum_entry pgstar_log_level_options[] = {
 	{"error", ERROR, false},
@@ -69,6 +70,20 @@ pgstar_define_gucs(void)
 		&pgstar_user,
 		NULL,
 		PGC_SUSET,
+		0,
+		NULL,
+		NULL,
+		NULL);
+
+	DefineCustomIntVariable(
+		"pgstar.ui_cache_ttl",
+		"TTL in seconds for pgstar UI HTML/JS/CSS responses.",
+		"Set to 0 to disable caching.",
+		&pgstar_ui_cache_ttl,
+		5,
+		0,
+		3600,
+		PGC_SIGHUP,
 		0,
 		NULL,
 		NULL,

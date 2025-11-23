@@ -10,8 +10,12 @@ ARCHIVE_DIR := $(GENERATED_DIR)/archive
 
 PG_CPPFLAGS += -I$(GENERATED_DIR) -Icore
 
+UI_DIR := ui
+UI_ROOT_HTML := $(UI_DIR)/root.html
+UI_ROOT_C := $(UI_DIR)/root_page.c
+
 # Automatically include all C files in the extension tree
-SRCS := $(wildcard *.c core/*.c api/*.c tcp/*.c tcp/protocols/*.c http/*.c functions/*.c)
+SRCS := $(wildcard *.c core/*.c api/*.c tcp/*.c tcp/protocols/*.c http/*.c functions/*.c ui/*.c)
 OBJS := $(SRCS:.c=.o)
 DATA = $(SQL_VERSIONED)
 PGFILEDESC = "pgstar - mock server helpers and version reporting"
@@ -51,7 +55,14 @@ $(SQL_VERSIONED): pgstar.control | $(ARCHIVE_DIR)
 		fi; \
 	done
 
-$(OBJS): $(VERSION_HEADER)
+$(OBJS): $(VERSION_HEADER) $(UI_ROOT_C)
+
+$(UI_ROOT_C): $(UI_ROOT_HTML)
+	@echo "Generating $@ from $<"
+	@printf '#include "postgres.h"\n\n' > $@
+	@printf 'const char *pgstar_root_html =\n' >> $@
+	@sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/^/"/' -e 's/$$/\\n"/' $< >> $@
+	@echo ';' >> $@
 
 all: $(VERSION_HEADER)
 

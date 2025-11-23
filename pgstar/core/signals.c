@@ -32,4 +32,3 @@ pgstar_sigterm(SIGNAL_ARGS)
 
 	errno = save_errno;
 }
-

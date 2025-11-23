@@ -24,21 +24,40 @@ pgstar_route_request(const PgstarRequest *req, PgstarResponse *resp)
 						 req->method,
 						 req->uri,
 						 req->path);
-
-	/* Root requires GET */
+	/* Root (/) is a hardcoded embedded HTML page */
 	if (strcmp(req->path, "/") == 0)
 	{
 		resp->status_code = 200;
 		resp->status_text = "OK";
-		resp->content_type = "application/json";
-		resp->body = psprintf("{\"service\":\"pgstar\",\"status\":\"ok\",\"version\":\"%s\"}\n",
-							  PGSTAR_VERSION);
+		resp->content_type = "text/html; charset=utf-8";
+		resp->body = pstrdup(pgstar_root_html);
+		return;
+	}
+	else
+	/* /app/* is handled by the UI pages router */
+	if (strncmp(req->path, "/app/", 5) == 0 ||
+		strcmp(req->path, "/app") == 0)
+	{
+		pgstar_route_ui_pages(req, resp);
 		return;
 	}
 	else
 	if (strncmp(req->path, "/pgstar/", 8) == 0)
 	{
 		pgstar_route_pgstar(req, resp);
+		return;
+	}
+	else
+	/* /static/js/ and /static/css/ are served via the UI asset routers */
+	if (strncmp(req->path, "/static/js/", 11) == 0)
+	{
+		pgstar_route_ui_js(req, resp);
+		return;
+	}
+	else
+	if (strncmp(req->path, "/static/css/", 12) == 0)
+	{
+		pgstar_route_ui_css(req, resp);
 		return;
 	}
 	else

@@ -23,6 +23,7 @@
 #define WAIT_EVENT_EXTENSION 0
 #endif
 
+static void pgstar_ensure_jobs_table(void);
 static void pgstar_ensure_default_user(void);
 
 void
@@ -49,40 +50,8 @@ pgstar_worker(Datum main_arg)
 	pgstar_execute_sql("CREATE EXTENSION IF NOT EXISTS pgcrypto");
 	pgstar_execute_sql("CREATE SCHEMA IF NOT EXISTS pgstar");
 	pgstar_ensure_default_user();
-	pgstar_execute_sql("CREATE TABLE IF NOT EXISTS pgstar.jobs ("
-					   "job_id            BIGSERIAL PRIMARY KEY,"
-					   "job_type          TEXT NOT NULL CHECK (job_type IN ('run_once','cron','continuous')),"
-					   "cron_expression   TEXT,"
-					   "table_name        TEXT NOT NULL,"
-					   "key_column        TEXT NOT NULL,"
-					   "given_stmt        TEXT NOT NULL,"
-					   "parameters        JSONB NOT NULL DEFAULT '{}'::jsonb,"
-					   "range_direction   TEXT NOT NULL DEFAULT 'asc' CHECK (range_direction IN ('asc','desc')),"
-					   "start_range       NUMERIC NOT NULL,"
-					   "end_range         NUMERIC,"
-					   "last_record       NUMERIC,"
-					   "batch_count       INTEGER NOT NULL DEFAULT 1000,"
-					   "start_time        TIMESTAMPTZ NOT NULL DEFAULT now(),"
-					   "duration          INTERVAL,"
-					   "last_updated_time TIMESTAMPTZ,"
-					   "completed_time    TIMESTAMPTZ,"
-					   "records_processed BIGINT NOT NULL DEFAULT 0"
-					   ")");
-	pgstar_execute_sql("CREATE TABLE IF NOT EXISTS pgstar.job_runs ("
-					   "job_run_id        BIGSERIAL PRIMARY KEY,"
-					   "job_id            BIGINT NOT NULL REFERENCES pgstar.jobs(job_id) ON DELETE CASCADE,"
-					   "table_name        TEXT,"
-					   "key_column        TEXT,"
-					   "start_time        TIMESTAMPTZ NOT NULL DEFAULT now(),"
-					   "start_range_number NUMERIC,"
-					   "start_batch       INTEGER,"
-					   "previous_completion TIMESTAMPTZ,"
-					   "records_retrieved BIGINT,"
-					   "records_processed BIGINT,"
-					   "processed_time    INTERVAL,"
-					   "executed_stmt     TEXT,"
-					   "parameters        JSONB NOT NULL DEFAULT '{}'::jsonb"
-					   ")");
+	pgstar_ensure_jobs_table();
+	pgstar_ui_ensure_pages();
 
 	sockfd = pgstar_tcp_open_socket(port);
 
@@ -117,6 +86,45 @@ pgstar_worker(Datum main_arg)
 
 	elog(pgstar_log_level, "pgstar: worker shutdown");
 	proc_exit(0);
+}
+
+static void
+pgstar_ensure_jobs_table(void)
+{
+	pgstar_execute_sql("CREATE TABLE IF NOT EXISTS pgstar.jobs ("
+					   "job_id            BIGSERIAL PRIMARY KEY,"
+					   "job_type          TEXT NOT NULL CHECK (job_type IN ('run_once','cron','continuous')),"
+					   "cron_expression   TEXT,"
+					   "table_name        TEXT NOT NULL,"
+					   "key_column        TEXT NOT NULL,"
+					   "given_stmt        TEXT NOT NULL,"
+					   "parameters        JSONB NOT NULL DEFAULT '{}'::jsonb,"
+					   "range_direction   TEXT NOT NULL DEFAULT 'asc' CHECK (range_direction IN ('asc','desc')),"
+					   "start_range       NUMERIC NOT NULL,"
+					   "end_range         NUMERIC,"
+					   "last_record       NUMERIC,"
+					   "batch_count       INTEGER NOT NULL DEFAULT 1000,"
+					   "start_time        TIMESTAMPTZ NOT NULL DEFAULT now(),"
+					   "duration          INTERVAL,"
+					   "last_updated_time TIMESTAMPTZ,"
+					   "completed_time    TIMESTAMPTZ,"
+					   "records_processed BIGINT NOT NULL DEFAULT 0"
+					   ")");
+	pgstar_execute_sql("CREATE TABLE IF NOT EXISTS pgstar.job_runs ("
+					   "job_run_id        BIGSERIAL PRIMARY KEY,"
+					   "job_id            BIGINT NOT NULL REFERENCES pgstar.jobs(job_id) ON DELETE CASCADE,"
+					   "table_name        TEXT,"
+					   "key_column        TEXT,"
+					   "start_time        TIMESTAMPTZ NOT NULL DEFAULT now(),"
+					   "start_range_number NUMERIC,"
+					   "start_batch       INTEGER,"
+					   "previous_completion TIMESTAMPTZ,"
+					   "records_retrieved BIGINT,"
+					   "records_processed BIGINT,"
+					   "processed_time    INTERVAL,"
+					   "executed_stmt     TEXT,"
+					   "parameters        JSONB NOT NULL DEFAULT '{}'::jsonb"
+					   ")");
 }
 
 /*
@@ -179,7 +187,7 @@ pgstar_ensure_default_user(void)
 		"  jsonb_build_object('note','auto-created default user') "
 		"FROM u "
 		"WHERE NOT EXISTS ("
-		"  SELECT 1 FROM pgstar.users WHERE username = %1$s"
+		"  SELECT 1 FROM pgstar.users LIMIT 1"
 		");",
 		quote_literal_cstr(username));
 

@@ -10,6 +10,7 @@ extern int pgstar_port;
 extern int pgstar_log_level;
 extern char *pgstar_database;
 extern char *pgstar_user;
+extern int pgstar_ui_cache_ttl;
 
 void pgstar_define_gucs(void);
 
@@ -59,6 +60,13 @@ void pgstar_route_api(const PgstarRequest *req, PgstarResponse *resp);
 void pgstar_route_ai(const PgstarRequest *req, PgstarResponse *resp);
 void pgstar_route_static(const PgstarRequest *req, PgstarResponse *resp);
 void pgstar_route_pgstar(const PgstarRequest *req, PgstarResponse *resp);
+void pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp);
+void pgstar_route_ui_js(const PgstarRequest *req, PgstarResponse *resp);
+void pgstar_route_ui_css(const PgstarRequest *req, PgstarResponse *resp);
+
+/* UI setup */
+void pgstar_ui_ensure_pages(void);
+extern const char *pgstar_root_html;
 
 #endif /* PGSTAR_H */
 
