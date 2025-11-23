@@ -60,4 +60,3 @@ EXTRA_CLEAN += $(VERSION_HEADER)
 PG_CONFIG = pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
-

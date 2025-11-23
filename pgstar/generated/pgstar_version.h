@@ -1,0 +1,3 @@
+#ifndef PGSTAR_VERSION_STRING
+#define PGSTAR_VERSION_STRING "1.19"
+#endif
