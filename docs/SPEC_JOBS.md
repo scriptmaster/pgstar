@@ -13,7 +13,7 @@ Created at worker startup in `core/worker.c`:
 - **cron_expression**: `text`
 - **table_name**: `text not null`
 - **key_column**: `text not null`
-- **given_stmt**: `text not null`
+- **row_stmt**: `text not null`
 - **parameters**: `jsonb not null default '{}'::jsonb`
 - **range_direction**:
   - `text not null default 'asc'`
@@ -21,6 +21,7 @@ Created at worker startup in `core/worker.c`:
 - **start_range**: `numeric not null`
 - **end_range**: `numeric`
 - **last_record**: `numeric`
+- **tracker_id**: `numeric`
 - **batch_count**: `integer not null default 1000`
 - **start_time**: `timestamptz not null default now()`
 - **duration**: `interval`
@@ -69,7 +70,7 @@ CREATE OR REPLACE FUNCTION pgstart_create_job(
   cron_expression text,
   table_name      text,
   key_column      text,
-  given_stmt      text,
+  row_stmt        text,
   parameters      jsonb,
   range_direction text,
   start_range     numeric,
@@ -168,6 +169,8 @@ Example: sync telemetry locations from Azure Postgres into `locations2025`
      'telemetry_fdw.telemetry_history',  -- table_name (driving table)
      'recorded_at',                      -- key_column (time-based key)
      $$
+     -- row_stmt: executed once per telemetry_history row in a batch.
+     -- $1 = telemetry_id (or key value), $2 = job.parameters (jsonb)
      INSERT INTO locations2025 (
        long,
        lat,
@@ -188,10 +191,7 @@ Example: sync telemetry locations from Azure Postgres into `locations2025`
        4          AS precision,
        'history'  AS source
      FROM telemetry_fdw.telemetry_history th
-     WHERE EXTRACT(EPOCH FROM th.recorded_at)::numeric
-           BETWEEN LEAST($1, $2) AND GREATEST($1, $2)
-     ORDER BY th.recorded_at DESC
-     LIMIT 1000
+     WHERE th.telemetry_id = $1
      ON CONFLICT (long, lat, short_address, long_address) DO NOTHING
      $$,
      '{}'::jsonb,                        -- parameters (unused here)
@@ -267,43 +267,74 @@ There are two intended ways to execute work described by `pgstar.jobs`:
       `last_record`, `last_updated_time`, `completed_time`.
     - Appending rows to `pgstar.job_runs` with the concrete execution slices.
 
-- **Built‑in background worker (simple run‑once executor)**:
+- **Built‑in background worker (row‑oriented run‑once executor)**:
   - Implemented in `core/jobs_worker.c` and registered from `pgstar/main.c`
     as the `pgstar jobs executor` background worker.
   - **Scope**:
     - Only handles `job_type = 'run_once'` jobs.
-    - Treats each job as a **single execution of `given_stmt`** over the
-      configured `[start_range, end_range]` window.
-    - Assumes `given_stmt` accepts two numeric parameters `$1` and `$2` for
-      the window bounds (they map to `start_range` and `end_range`).
-  - **Execution flow per job**:
-    1. Select *one* pending `run_once` job:
+    - Executes *batches of table rows* and, for each row, invokes the job’s
+      `row_stmt`.
+  - **Key columns and fields**:
+    - `table_name`, `key_column`: identify the driving table and key used to
+      page through work.
+    - `start_range`, `end_range`, `range_direction`: define the numeric key
+      window for this job.
+    - `batch_count`: maximum number of rows per batch.
+    - `tracker_id`:
+      - Stores the last processed key value for this job (initially `NULL`).
+      - Paging logic uses `tracker_id` plus `range_direction` to resume where
+        the previous batch left off.
+    - `row_stmt`:
+      - SQL statement executed **once per row** in a batch.
+      - Receives the row key and job parameters, e.g.:
+        - `$1` = key value from `key_column`.
+        - `$2` = `parameters` jsonb for the job.
+  - **Batch selection (`batch_stmt`)**:
+    - For each job, the worker synthesizes a `batch_stmt` of the form:
+      - `SELECT key_column FROM table_name WHERE key_column BETWEEN start_range AND end_range`
+        plus a `tracker_id` predicate:
+        - Ascending: `AND key_column > tracker_id`
+        - Descending: `AND key_column < tracker_id`
+        (if `tracker_id` is `NULL`, the predicate is omitted).
+      - Ordered by `key_column ASC` or `DESC` based on `range_direction`.
+      - Limited by `batch_count`.
+    - The exact text of this `batch_stmt` is stored in
+      `pgstar.job_runs.batch_stmt` for introspection.
+  - **Execution flow per tick**:
+    1. Load *all* pending `run_once` jobs:
        - `completed_time IS NULL`.
-       - Ordered by `start_time`.
-       - Locked with `FOR UPDATE SKIP LOCKED` so future multi‑worker
-         designs can coexist.
-    2. Execute `given_stmt` via SPI:
-       - Called as `given_stmt($1 := start_range, $2 := end_range)` using
-         `SPI_execute_with_args(...)`.
-       - Uses `batch_count` as the `tcount` hint to SPI, which limits the
-         number of processed rows for `SELECT`‑like statements.
-    3. Insert a row into `pgstar.job_runs`:
-       - Copies `job_id`, `table_name`, `key_column`, `start_range` and
-         `parameters`.
-       - Sets `records_retrieved` / `records_processed` to `SPI_processed`.
-       - Stores the executed SQL text in `executed_stmt`.
-       - Records the previous `completed_time` (if any) in
-         `previous_completion`.
-    4. Update the parent `pgstar.jobs` row:
-       - `records_processed` is incremented by `SPI_processed`.
-       - `last_updated_time` is set to `now()`.
-       - `completed_time` is set to `now()` (the built‑in worker treats
-         `run_once` jobs as fully completed after a single execution).
+       - Locked with `FOR UPDATE SKIP LOCKED` so multi‑worker designs can
+         coexist in the future.
+    2. For each such job (conceptually in parallel, but implemented in a
+       loop inside the jobs worker process):
+       1. Insert a new `pgstar.job_runs` row to represent the current batch,
+          including `batch_stmt`, `row_stmt`, and the previous
+          `completed_time`.
+       2. Execute `batch_stmt` via SPI to fetch up to `batch_count` key
+          values.
+       3. For each returned row:
+          - Invoke `row_stmt` via SPI, passing the row key and the job’s
+            `parameters` jsonb.
+          - Update the `pgstar.job_runs` row:
+            - Increment `records_processed`.
+            - Update `processed_time` to reflect the elapsed time so far.
+          - Advance `tracker_id` on the parent job to the current key.
+       4. After the batch:
+          - If no rows were returned, mark the job as completed by setting
+            `completed_time = now()`.
+          - Always update `pgstar.jobs.last_updated_time` and increment
+            `records_processed` by the number of processed rows.
   - **Limitations / design notes**:
-    - The built‑in worker **does not** currently:
-      - Update `last_record`.
-      - Split work into multiple `job_runs` batches for a single job.
-      - Interpret `cron` or `continuous` jobs.
-    - For advanced scheduling, true batching, and resumable windows, use an
-      external orchestrator that builds on the same metadata and helper
-      functions.
+    - The built‑in worker currently only supports `run_once` jobs.
+    - Cron/continuous rescheduling and more advanced orchestration patterns
+      are still expected to be built by an external orchestrator.
+    - All job execution runs in the dedicated jobs background worker process;
+      no additional OS threads are created inside PostgreSQL.
+
+### Debugging: dropping jobs tables
+
+- GUC: `pgstar.pgstar_jobs_drop` (boolean, default `false`)
+  - When set to `true`, the jobs worker will drop and recreate the
+    `pgstar.jobs` and `pgstar.job_runs` tables on startup.
+  - Intended for development/debugging only, to reset all job metadata and
+    history between test runs.

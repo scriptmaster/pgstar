@@ -43,15 +43,38 @@ pgstar_jobs_worker(Datum main_arg)
 
 	while (!pgstar_got_sigterm)
 	{
-		bool	did_work;
+		bool		did_work = false;
 
 		ResetLatch(MyLatch);
 
 		/*
 		 * Execute at most one job per tick. If we did work, use a short
 		 * timeout so we can continue quickly; otherwise back off a bit.
+		 * Protect the tick with PG_TRY so that any ERROR in job SQL or SPI
+		 * does not terminate the background worker; instead we log and
+		 * continue the loop.
 		 */
-		did_work = pgstar_jobs_tick();
+		PG_TRY();
+		{
+			did_work = pgstar_jobs_tick();
+		}
+		PG_CATCH();
+		{
+			ErrorData  *edata = CopyErrorData();
+
+			FlushErrorState();
+
+			if (edata)
+			{
+				elog(WARNING,
+					 "pgstar: jobs worker tick failed: %s",
+					 edata->message);
+				FreeErrorData(edata);
+			}
+
+			did_work = false;
+		}
+		PG_END_TRY();
 
 		rc = WaitLatch(MyLatch,
 					   WL_LATCH_SET |
@@ -101,8 +124,9 @@ pgstar_jobs_tick(void)
 				(errmsg("pgstar jobs worker: SPI_connect failed: %d", ret)));
 
 	/*
-	 * Select a single pending run_once job. We use FOR UPDATE SKIP LOCKED so
-	 * that future multi-worker/job-runner designs can safely coexist.
+	 * Select a single pending run_once job. For now we avoid FOR UPDATE /
+	 * SKIP LOCKED to keep things simple and to ensure compatibility with
+	 * all caller contexts.
 	 */
 	ret = SPI_execute(
 		"SELECT job_id, table_name, key_column, given_stmt, parameters, "
@@ -112,7 +136,6 @@ pgstar_jobs_tick(void)
 		"WHERE job_type = 'run_once' "
 		"  AND completed_time IS NULL "
 		"ORDER BY start_time "
-		"FOR UPDATE SKIP LOCKED "
 		"LIMIT 1",
 		true,
 		1);

@@ -68,5 +68,8 @@ void pgstar_route_ui_css(const PgstarRequest *req, PgstarResponse *resp);
 void pgstar_ui_ensure_pages(void);
 extern const char *pgstar_root_html;
 
+/* Safe memory utilities */
+void pgstar_safe_pfree(void *ptr);
+
 #endif /* PGSTAR_H */
 

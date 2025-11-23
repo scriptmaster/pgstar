@@ -47,11 +47,38 @@ pgstar_worker(Datum main_arg)
 	BackgroundWorkerInitializeConnection(pgstar_database, pgstar_user);
 #endif
 
-	pgstar_execute_sql("CREATE EXTENSION IF NOT EXISTS pgcrypto");
-	pgstar_execute_sql("CREATE SCHEMA IF NOT EXISTS pgstar");
-	pgstar_ensure_default_user();
-	pgstar_ensure_jobs_table();
-	pgstar_ui_ensure_pages();
+	/*
+	 * Initialization of extension state (schema, users, jobs tables, UI pages).
+	 * Wrap in PG_TRY so that any SQL or SPI ERRORs during boot do not cause
+	 * the background worker process to exit; we log and continue instead.
+	 */
+	PG_TRY();
+	{
+		pgstar_execute_sql("CREATE EXTENSION IF NOT EXISTS pgcrypto");
+		pgstar_execute_sql("CREATE SCHEMA IF NOT EXISTS pgstar");
+		pgstar_ensure_default_user();
+		pgstar_ensure_jobs_table();
+		/* pgstar_ui_ensure_pages(); -- MIGRATED TO SQL: pgstar.pages table creation
+		 * and seed data insertion has been moved to pgstar--*.sql files for
+		 * synchronous creation during CREATE EXTENSION. The function is now a no-op.
+		 * Other important tables (users, jobs, etc.) remain in C code as they
+		 * require runtime initialization logic. */
+	}
+	PG_CATCH();
+	{
+		ErrorData  *edata = CopyErrorData();
+
+		FlushErrorState();
+
+		if (edata)
+		{
+			elog(WARNING,
+				 "pgstar: worker initialization failed: %s",
+				 edata->message);
+			FreeErrorData(edata);
+		}
+	}
+	PG_END_TRY();
 
 	sockfd = pgstar_tcp_open_socket(port);
 

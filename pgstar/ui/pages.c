@@ -48,171 +48,34 @@ static void pgstar_ui_trim(char *str);
 
 /*
  * Public API: ensure pgstar.pages exists and seed built-in rows.
+ * 
+ * MIGRATED TO SQL: This function's table creation and seed data insertion
+ * has been migrated to pgstar--1.20.sql (and future version files) to ensure
+ * synchronous creation during CREATE EXTENSION. The table and seed data are
+ * now created immediately when the extension is installed, eliminating race
+ * conditions with the background worker initialization.
+ * 
+ * This function is kept as a no-op stub for backward compatibility.
+ * If needed in the future for dynamic updates or important runtime initialization,
+ * the implementation can be restored here.
  */
 void
 pgstar_ui_ensure_pages(void)
 {
-	/*
-	 * pgstar.pages:
-	 *   - page_name: identifier, e.g. 'login', 'dashboard',
-	 *                'js/pages_index.js', 'css/pages_index.css'
-	 *   - parent_tag: '', 'body', or 'main' for HTML pages
-	 *   - html: HTML fragment or full document or asset content
-	 *   - content_type: MIME type; defaults to text/html
-	 *   - meta: jsonb describing meta tags (optional)
-	 *   - js, css: comma-separated logical asset names (e.g. 'pages_index.js')
-	 *   - is_custom: when true, seed updates will not override the row
+	/* No-op: table creation and seed data now handled in pgstar--*.sql files */
+	/* 
+	 * Previous implementation created pgstar.pages table and inserted seed data:
+	 * - Table structure with page_id, page_name, parent_tag, html, content_type, etc.
+	 * - Seed data for: js/pages_index.js, css/pages_index.css, css/emerald-v2.css,
+	 *   login page, dashboard page, and other default pages
+	 * 
+	 * All of this is now in pgstar--1.20.sql for synchronous execution during
+	 * CREATE EXTENSION.
 	 */
-	pgstar_execute_sql(
-		"CREATE TABLE IF NOT EXISTS pgstar.pages ("
-		"  page_id      BIGSERIAL PRIMARY KEY,"
-		"  page_name    TEXT UNIQUE,"
-		"  parent_tag   TEXT NOT NULL DEFAULT '' "
-		"               CHECK (parent_tag IN ('','body','main')),"
-		"  html         TEXT,"
-		"  content_type TEXT NOT NULL "
-		"               DEFAULT 'text/html; charset=utf-8',"
-		"  meta         JSONB NOT NULL DEFAULT '[]'::jsonb,"
-		"  js           TEXT,"
-		"  css          TEXT,"
-		"  is_custom    BOOLEAN NOT NULL DEFAULT FALSE,"
-		"  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()"
-		")");
-
-	/* Default JS bundle asset: /static/js/pages_index.js */
-	pgstar_execute_sql(
-		"INSERT INTO pgstar.pages (page_name, parent_tag, html, content_type, "
-		"                          meta, js, css, is_custom) "
-		"VALUES ("
-		"  'js/pages_index.js',"
-		"  '',"
-		"  '/* pgstar default JS bundle (datastar loader) */\n"
-		"   (function(){\n"
-		"     var s = document.createElement(\"script\");\n"
-		"     s.src = \"https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-RC.6/bundles/datastar.js\";\n"
-		"     document.head.appendChild(s);\n"
-		"   })();\n',"
-		"  'application/javascript',"
-		"  '[]'::jsonb,"
-		"  NULL,"
-		"  NULL,"
-		"  FALSE"
-		") "
-		"ON CONFLICT (page_name) DO UPDATE "
-		"SET html = EXCLUDED.html,"
-		"    content_type = EXCLUDED.content_type,"
-		"    updated_at = now() "
-		"WHERE pgstar.pages.is_custom = FALSE");
-
-	/* Default CSS bundle asset: /static/css/pages_index.css */
-	pgstar_execute_sql(
-		"INSERT INTO pgstar.pages (page_name, parent_tag, html, content_type, "
-		"                          meta, js, css, is_custom) "
-		"VALUES ("
-		"  'css/pages_index.css',"
-		"  '',"
-		"  '/* pgstar default CSS bundle */\n"
-		"   @import url(\"https://static2.sharepointonline.com/files/fabric/office-ui-fabric-core/11.0.0/css/fabric.min.css\");\n"
-		"   @import url(\"/static/css/emerald-v2.css\");\n"
-		"   @import url(\"https://cdn.jsdelivr.net/npm/@picocss/pico@2.1.1/css/pico.classless.min.css\");\n',"
-		"  'text/css; charset=utf-8',"
-		"  '[]'::jsonb,"
-		"  NULL,"
-		"  NULL,"
-		"  FALSE"
-		") "
-		"ON CONFLICT (page_name) DO UPDATE "
-		"SET html = EXCLUDED.html,"
-		"    content_type = EXCLUDED.content_type,"
-		"    updated_at = now() "
-		"WHERE pgstar.pages.is_custom = FALSE");
-
-	/* Additional CSS asset: /static/css/emerald-v2.css (placeholder) */
-	pgstar_execute_sql(
-		"INSERT INTO pgstar.pages (page_name, parent_tag, html, content_type, "
-		"                          meta, js, css, is_custom) "
-		"VALUES ("
-		"  'css/emerald-v2.css',"
-		"  '',"
-		"  '/* pgstar emerald theme placeholder */\n"
-		"   :root { --pgstar-accent: #047857; }\n',"
-		"  'text/css; charset=utf-8',"
-		"  '[]'::jsonb,"
-		"  NULL,"
-		"  NULL,"
-		"  FALSE"
-		") "
-		"ON CONFLICT (page_name) DO UPDATE "
-		"SET html = EXCLUDED.html,"
-		"    content_type = EXCLUDED.content_type,"
-		"    updated_at = now() "
-		"WHERE pgstar.pages.is_custom = FALSE");
-
-	/* Login page: /app/login.html -> page_name 'login' */
-	pgstar_execute_sql(
-		"INSERT INTO pgstar.pages (page_name, parent_tag, html, content_type, "
-		"                          meta, js, css, is_custom) "
-		"VALUES ("
-		"  'login',"
-		"  'main',"
-		"  '<section>\n"
-		"     <h1>Login</h1>\n"
-		"     <form data-star>\n"
-		"       <label>Username\n"
-		"         <input name=\"username\" required />\n"
-		"       </label>\n"
-		"       <label>Password\n"
-		"         <input type=\"password\" name=\"password\" required />\n"
-		"       </label>\n"
-		"       <button type=\"submit\">Sign in</button>\n"
-		"     </form>\n"
-		"   </section>\n',"
-		"  'text/html; charset=utf-8',"
-		"  '[]'::jsonb,"
-		"  'pages_index.js',"
-		"  'pages_index.css',"
-		"  FALSE"
-		") "
-		"ON CONFLICT (page_name) DO UPDATE "
-		"SET parent_tag   = EXCLUDED.parent_tag,"
-		"    html         = EXCLUDED.html,"
-		"    content_type = EXCLUDED.content_type,"
-		"    meta         = EXCLUDED.meta,"
-		"    js           = EXCLUDED.js,"
-		"    css          = EXCLUDED.css,"
-		"    updated_at   = now() "
-		"WHERE pgstar.pages.is_custom = FALSE");
-
-	/* Dashboard page: /app/dashboard.html -> page_name 'dashboard' */
-	pgstar_execute_sql(
-		"INSERT INTO pgstar.pages (page_name, parent_tag, html, content_type, "
-		"                          meta, js, css, is_custom) "
-		"VALUES ("
-		"  'dashboard',"
-		"  'main',"
-		"  '<section>\n"
-		"     <h1>Dashboard</h1>\n"
-		"     <p data-star>Welcome to pgstar dashboard.</p>\n"
-		"   </section>\n',"
-		"  'text/html; charset=utf-8',"
-		"  '[]'::jsonb,"
-		"  'pages_index.js',"
-		"  'pages_index.css',"
-		"  FALSE"
-		") "
-		"ON CONFLICT (page_name) DO UPDATE "
-		"SET parent_tag   = EXCLUDED.parent_tag,"
-		"    html         = EXCLUDED.html,"
-		"    content_type = EXCLUDED.content_type,"
-		"    meta         = EXCLUDED.meta,"
-		"    js           = EXCLUDED.js,"
-		"    css          = EXCLUDED.css,"
-		"    updated_at   = now() "
-		"WHERE pgstar.pages.is_custom = FALSE");
 }
 
 /*
- * Route: /app and /app/*.html
+ * Route: /app and /app/X.html
  *
  * Maps:
  *   /app              -> page_name 'dashboard'
@@ -302,7 +165,13 @@ pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 		resp->status_code = 200;
 		resp->status_text = "OK";
 		resp->content_type = content_type;
-		resp->body = body;
+		/*
+		 * Take our own copy of the cached body so that the HTTP layer can
+		 * safely pfree(resp->body) after sending the response, without
+		 * affecting the cache entry.
+		 */
+		resp->body = pstrdup(body);
+		pfree(body);
 		return;
 	}
 
@@ -315,16 +184,22 @@ pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 		return;
 	}
 
-	pgstar_ui_cache_put(cache_key, body, content_type);
+	pgstar_ui_cache_put(cache_key, pstrdup(body), content_type);
 
 	resp->status_code = 200;
 	resp->status_text = "OK";
-	resp->content_type = content_type;
-	resp->body = body;
+	resp->content_type = pstrdup(content_type);
+	resp->body = pstrdup(body);
+	// resp->content_type = "text/html";
+	// resp->body = "test 1.5";
+	pfree(body);
+	// pgstar_safe_pfree(body); // Safe wrapper that checks for NULL and handles errors gracefully
+	pgstar_safe_pfree((void *) content_type);
+	// pgstar_safe_pfree(body);
 }
 
 /*
- * Route: /static/js/*.js
+ * Route: /static/js/name.js
  * Uses pgstar.pages rows with page_name 'js/<name>.js'.
  */
 void
@@ -393,7 +268,7 @@ pgstar_route_ui_js(const PgstarRequest *req, PgstarResponse *resp)
 }
 
 /*
- * Route: /static/css/*.css
+ * Route: /static/css/name.css
  * Uses pgstar.pages rows with page_name 'css/<name>.css'.
  */
 void
@@ -705,6 +580,7 @@ pgstar_ui_fetch_asset(const char *kind, const char *name,
 			TupleDesc	tupdesc = SPI_tuptable->tupdesc;
 			char	   *content;
 			char	   *ct;
+			bool		ct_allocated = false;
 
 			content = SPI_getvalue(tup, tupdesc, 1);
 			ct = SPI_getvalue(tup, tupdesc, 2);
@@ -718,13 +594,23 @@ pgstar_ui_fetch_asset(const char *kind, const char *name,
 					ct = pstrdup("application/javascript");
 				else
 					ct = pstrdup("text/css; charset=utf-8");
+				ct_allocated = true;
 			}
 
 			initStringInfo(&buf);
 			appendStringInfoString(&buf, content);
 
-			*body = buf.data;
+			*body = pstrdup(buf.data);
 			*content_type = pstrdup(ct);
+			
+			/* Clean up temporary allocations */
+			pgstar_safe_pfree(buf.data);
+			/* Free ct only if we allocated it ourselves (when it was NULL).
+			 * If ct came from SPI_getvalue(), it will be freed by SPI_finish() 
+			 * which is called later in this function. */
+			if (ct_allocated)
+				pgstar_safe_pfree(ct);
+			
 			found = true;
 		}
 	}
