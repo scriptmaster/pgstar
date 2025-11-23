@@ -6,12 +6,12 @@
 #include "utils/guc.h"
 
 #include "core/worker.h"
+#include "pgstar.h"
 
 PG_MODULE_MAGIC;
 
+void		_PG_init(void);
 PG_FUNCTION_INFO_V1(pgstar_version);
-
-static const char *PGSTAR_VERSION = "v1.0.2";
 
 Datum
 pgstar_version(PG_FUNCTION_ARGS)
@@ -23,6 +23,8 @@ void
 _PG_init(void)
 {
 	BackgroundWorker worker;
+
+	pgstar_define_gucs();
 
 	if (!process_shared_preload_libraries_in_progress)
 		return;

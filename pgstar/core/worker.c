@@ -1,9 +1,9 @@
 #include "postgres.h"
 
-#include "core/env.h"
 #include "core/signals.h"
 #include "core/spi.h"
 #include "core/worker.h"
+#include "pgstar.h"
 #include "tcp/socket.h"
 
 #include "libpq/pqsignal.h"
@@ -13,6 +13,7 @@
 #include "storage/latch.h"
 #include "storage/proc.h"
 #include "utils/wait_event.h"
+#include <unistd.h>
 
 #ifndef WAIT_EVENT_EXTENSION
 #define WAIT_EVENT_EXTENSION 0
@@ -27,15 +28,16 @@ pgstar_worker(Datum main_arg)
 
 	pgstar_register_sigterm();
 
-	pgstar_env_init();
-	port = pgstar_env_port();
+	port = pgstar_port;
+	if (port < 1025 || port > 65535)
+		port = 5481;
 
-	elog(LOG, "pgstar: worker booting on port %d", port);
+	elog(pgstar_log_level, "pgstar: worker booting on port %d", port);
 
 #if PG_VERSION_NUM >= 110000
-	BackgroundWorkerInitializeConnection("postgres", "postgres", 0);
+	BackgroundWorkerInitializeConnection(pgstar_database, pgstar_user, 0);
 #else
-	BackgroundWorkerInitializeConnection("postgres", "postgres");
+	BackgroundWorkerInitializeConnection(pgstar_database, pgstar_user);
 #endif
 
 	pgstar_execute_sql("CREATE SCHEMA IF NOT EXISTS pgstar");
@@ -71,7 +73,7 @@ pgstar_worker(Datum main_arg)
 	if (sockfd >= 0)
 		close(sockfd);
 
-	elog(LOG, "pgstar: worker shutdown");
+	elog(pgstar_log_level, "pgstar: worker shutdown");
 	proc_exit(0);
 }
 

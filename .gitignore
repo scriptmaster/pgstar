@@ -1,2 +1,4 @@
 *.bc
 bin/
+*.o
+generated/

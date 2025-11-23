@@ -2,6 +2,7 @@
 
 #include "tcp/socket.h"
 
+#include "pgstar.h"
 #include "tcp/protocol.h"
 
 #include <errno.h>
@@ -10,6 +11,9 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#ifdef TCP_NODELAY
+#include <netinet/tcp.h>
+#endif
 
 int
 pgstar_tcp_open_socket(int port)
@@ -46,7 +50,7 @@ pgstar_tcp_open_socket(int port)
 		ereport(ERROR,
 				(errmsg("pgstar: could not set non-blocking mode: %m")));
 
-	elog(LOG, "pgstar: listening on port %d", port);
+	elog(pgstar_log_level, "pgstar: listening on port %d", port);
 	return sockfd;
 }
 
@@ -74,6 +78,15 @@ pgstar_tcp_accept_loop(int sockfd)
 		cflags = fcntl(client_fd, F_GETFL, 0);
 		if (cflags >= 0)
 			(void) fcntl(client_fd, F_SETFL, cflags | O_NONBLOCK);
+
+#ifdef TCP_NODELAY
+		{
+			int			one = 1;
+
+			(void) setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY,
+							  &one, sizeof(one));
+		}
+#endif
 
 		pgstar_tcp_protocol_route(client_fd);
 	}

@@ -15,7 +15,8 @@ EXT_UNINSTALL_TARGETS := $(addprefix extension-uninstall-,$(EXT_DIRS))
 
 .PHONY: help test extension-build extension-install extension-clean extension-uninstall \
 	extension-build-% extension-install-% extension-clean-% extension-uninstall-% \
-	git-status git-checkout-main git-merge-pgstar_http_post git-merge-pgstar_jobs git-commit
+	git-status git-checkout-main git-merge-pgstar_http_post git-merge-pgstar_jobs git-commit \
+	git-new-branch-pgstar-http-post pgstar-symbols
 
 help:
 	@echo "Available targets:"
@@ -28,6 +29,7 @@ help:
 	@echo "Use EXT_DIRS=\"pgstar\" (or legacy EXT_DIR=pgstar) to scope the targets."
 
 test: extension-build
+clean: extension-clean
 
 extension-build: $(EXT_BUILD_TARGETS)
 
@@ -57,7 +59,10 @@ install: extension-install-pgstar
 
 # auto: auto-build auto-run
 
-build-install-run: build install run
+restart:
+	systemctl restart postgresql
+
+build-install-run: build install restart run
 
 auto-build-run:
 	find . -name "*.c" -o -name "*.sql"  -o -name ".env" | entr -s 'make build-install-run'
@@ -94,3 +99,9 @@ git-merge-pgstar_jobs:
 git-commit:
 	git add -A
 	git commit -m "chore: pgstar http, jobs, users, and build wiring"
+
+git-new-branch-pgstar-http-post:
+	git checkout -b pgstar_http_post
+
+pgstar-symbols:
+	nm -D /usr/lib/postgresql/14/lib/pgstar.so | grep pgstar_http_post || true
