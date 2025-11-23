@@ -14,7 +14,8 @@ EXT_CLEAN_TARGETS := $(addprefix extension-clean-,$(EXT_DIRS))
 EXT_UNINSTALL_TARGETS := $(addprefix extension-uninstall-,$(EXT_DIRS))
 
 .PHONY: help test extension-build extension-install extension-clean extension-uninstall \
-	extension-build-% extension-install-% extension-clean-% extension-uninstall-%
+	extension-build-% extension-install-% extension-clean-% extension-uninstall-% \
+	git-status git-checkout-main git-merge-pgstar_http_post git-merge-pgstar_jobs git-commit
 
 help:
 	@echo "Available targets:"
@@ -80,3 +81,19 @@ psql:
 
 psql2:
 	sudo -u postgres psql
+
+git-status:
+	git status -b
+
+git-checkout-main:
+	git checkout main
+
+git-merge-pgstar_http_post:
+	git merge pgstar_http_post
+
+git-merge-pgstar_jobs:
+	git merge pgstar_jobs
+
+git-commit:
+	git add -A
+	git commit -m "chore: pgstar http, jobs, users, and build wiring"
