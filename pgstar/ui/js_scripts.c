@@ -21,7 +21,7 @@ pgstar_ui_append_js_scripts(StringInfo body, const char *js_names)
 	{
 		/* Default datastar CDN script when none specified */
 		appendStringInfoString(body,
-							 "  <script src=\"https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-RC.6/bundles/datastar.js\"></script>\n");
+							 "  <script type=\"module\" src=\"https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-RC.6/bundles/datastar.js\"></script>\n");
 		return;
 	}
 
@@ -36,20 +36,19 @@ pgstar_ui_append_js_scripts(StringInfo body, const char *js_names)
 		if (token[0] == '\0')
 			continue;
 
-		/* Check if it's a full URL (http:// or https://) */
-		if (strncmp(token, "http://", 7) == 0 || strncmp(token, "https://", 8) == 0)
+		/* Check if token contains "module" keyword */
+		const char *type_attr = (strstr(token, "module") != NULL) ? "type=\"module\"" : "master";
+
+		/* Determine prefix: empty for full URLs, /static/js/ for relative paths */
+		const char *prefix = "";
+		if (strncmp(token, "http://", 7) != 0 && strncmp(token, "https://", 8) != 0)
 		{
-			appendStringInfo(body,
-							 "  <script src=\"%s\"></script>\n",
-							 token);
+			prefix = "/static/js/";
 		}
-		else
-		{
-			/* Relative path - prepend /static/js/ */
-			appendStringInfo(body,
-							 "  <script src=\"/static/js/%s\"></script>\n",
-							 token);
-		}
+
+		appendStringInfo(body,
+						 "  <script %s src=\"%s%s\"></script>\n",
+						 type_attr, prefix, token);
 	}
 
 	pfree(work);

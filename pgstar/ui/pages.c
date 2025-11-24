@@ -195,10 +195,13 @@ pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 		return;
 	}
 
+	bool		content_type_allocated = true; /* Assume allocated by pgstar_ui_render_page */
+	
 	if (content_type == NULL)
 	{
 		elog(WARNING, "pgstar: UI render_page returned NULL content_type for '%s'", page_name);
-		content_type = "text/html; charset=utf-8";
+		content_type = pstrdup("text/html; charset=utf-8");
+		content_type_allocated = true; /* We allocated it */
 	}
 
 	elog(pgstar_log_level, "pgstar: UI cache PUT for page '%s' (key: %s), body_len=%zu, content_type='%s'", 
@@ -208,15 +211,24 @@ pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 	// elog(pgstar_log_level, "pgstar: UI cache PUT: body_copy created at %p", (void *)body_cache);
 
 	pgstar_ui_cache_put(cache_key, body_cache, content_type);
-	// elog(pgstar_log_level, "pgstar: UI cache PUT completed");
+	elog(pgstar_log_level, "pgstar: UI cache PUT completed");
 
 	resp->status_code = 200;
 	resp->status_text = "OK";
 	resp->content_type = pstrdup(content_type);
 	resp->body = pstrdup(body);
 
-	pfree(body);
-	pgstar_safe_pfree((void *) content_type);
+	if (content_type_allocated) {
+		pgstar_safe_pfree(content_type);
+	}
+
+	/* Note: We don't free 'body' or 'content_type' here because:
+	 * 1. They were allocated by pgstar_ui_render_page() in a transaction context
+	 * 2. We've already copied them to resp->body and resp->content_type
+	 * 3. The transaction memory context will be cleaned up automatically
+	 * 4. Attempting to free them here can cause segfaults if the memory context
+	 *    has changed or been reset after the SPI operations completed.
+	 */
 
 	elog(pgstar_log_level, "pgstar: UI pages route completed successfully");
 }

@@ -163,19 +163,20 @@ SET parent_tag   = EXCLUDED.parent_tag,
     updated_at   = now()
 WHERE pgstar.pages.is_custom = FALSE;
 
+DELETE FROM pgstar.pages WHERE page_name='dashboard';
 INSERT INTO pgstar.pages (page_name, parent_tag, html, content_type, meta, js, css, is_custom)
 VALUES (
   'dashboard',
   'main',
   '<section>
-     <h1>PGSTAR Dashboard</h1>
+     <h1>PGSTAR Dashboard!</h1>
      <p data-star>Welcome to pgstar dashboard.</p>
    </section>
 ',
   'text/html; charset=utf-8',
   '[]'::jsonb,
   '',
-  'https://unpkg.com/7.css@0.21.1/dist/7.css',
+  '',
   FALSE
 )
 ON CONFLICT (page_name) DO UPDATE

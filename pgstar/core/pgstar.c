@@ -10,7 +10,7 @@ int pgstar_port = 5481;
 int pgstar_log_level = INFO;
 char *pgstar_database = "postgres";
 char *pgstar_user = NULL;
-int pgstar_ui_cache_ttl = 5;
+int pgstar_ui_cache_ttl = 10;
 
 static const struct config_enum_entry pgstar_log_level_options[] = {
 	{"error", ERROR, false},

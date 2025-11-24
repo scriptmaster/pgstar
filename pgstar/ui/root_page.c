@@ -11,7 +11,7 @@ const char *pgstar_root_html =
 "  </head>\n"
 "  <body>\n"
 "    <main>\n"
-"      <h1>pgstar</h1>\n"
+"      <h1>PGSTAR: World's first AI powered Fullstack Framework entirely in SQL, PostgreSQL(API) to PostgreSQL/Any (DB).</h1>\n"
 "      <p><a href=\"/app/\">Enter app UI</a></p>\n"
 "    </main>\n"
 "  </body>\n"

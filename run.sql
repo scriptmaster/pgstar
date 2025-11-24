@@ -1,6 +1,6 @@
--- DROP EXTENSION IF EXISTS pgstar CASCADE;
--- DROP EXTENSION IF EXISTS pgstar;
+DROP EXTENSION IF EXISTS pgstar CASCADE;
 CREATE EXTENSION pgstar;
+-- ALTER EXTENSION pgstar UPDATE;
 
 SELECT pgstar_version();
 -- SELECT pgstar_tcp_server();
@@ -23,6 +23,6 @@ SELECT pgstar_version();
 --   '{"Content-Type": "application/json"}'::jsonb
 -- );
 
-select * from pgstar.pages;
-select * from pgstar.jobs;
+-- select * from pgstar.pages;
+-- select * from pgstar.jobs;
 -- DELETE FROM pgstar.pages;
