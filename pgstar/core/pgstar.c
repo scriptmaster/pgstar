@@ -9,7 +9,7 @@ const char *PGSTAR_VERSION = PGSTAR_VERSION_STRING;
 int pgstar_port = 5481;
 int pgstar_log_level = INFO;
 char *pgstar_database = "postgres";
-char *pgstar_user = NULL;
+char *pgstar_user = "pgstar";
 int pgstar_ui_cache_ttl = 10;
 
 static const struct config_enum_entry pgstar_log_level_options[] = {
@@ -68,7 +68,7 @@ pgstar_define_gucs(void)
 		"User name used by the pgstar background worker.",
 		NULL,
 		&pgstar_user,
-		NULL,
+		"pgstar",
 		PGC_SUSET,
 		0,
 		NULL,
@@ -80,7 +80,7 @@ pgstar_define_gucs(void)
 		"TTL in seconds for pgstar UI HTML/JS/CSS responses.",
 		"Set to 0 to disable caching.",
 		&pgstar_ui_cache_ttl,
-		5,
+		10,
 		0,
 		3600,
 		PGC_SIGHUP,

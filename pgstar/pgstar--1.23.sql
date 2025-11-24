@@ -58,7 +58,7 @@ CREATE SCHEMA IF NOT EXISTS pgstar;
 CREATE TABLE IF NOT EXISTS pgstar.pages (
   page_id      BIGSERIAL PRIMARY KEY,
   page_name    TEXT UNIQUE,
-  parent_tag   TEXT NOT NULL DEFAULT '' 
+  parent_tag   TEXT NOT NULL DEFAULT ''
                CHECK (parent_tag IN ('','body','main')),
   html         TEXT,
   content_type TEXT NOT NULL 
@@ -167,7 +167,7 @@ WHERE pgstar.pages.is_custom = FALSE;
 INSERT INTO pgstar.pages (page_name, parent_tag, html, content_type, meta, js, css, is_custom)
 VALUES (
   'dashboard',
-  'div',
+  'main',
   '<section class="panel">
     <aside>
       <ul

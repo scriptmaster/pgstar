@@ -67,6 +67,8 @@ restart:
 
 build-install-run: build install restart run
 
+rebuild-restart: extension-build-pgstar extension-install-pgstar restart
+
 auto-build-run:
 	@find . -name "*.c" -o -name "*.sql"  -o -name ".env" | entr -s ' \
 		DEBOUNCE_FILE="/tmp/make-auto-debounce"; \
@@ -132,7 +134,8 @@ tail:
 			echo "No PostgreSQL log files found in /var/lib/postgresql/14/main/log"; \
 			exit 1; \
 		fi; \
-		tail -n 100 "$$latest"'
+		 echo .; echo $$latest; echo .; echo .; \
+		tail -200 "$$latest"'
 
 git-status:
 	git status -b

@@ -40,6 +40,8 @@ pgstar_worker(Datum main_arg)
 		port = 5481;
 
 	elog(pgstar_log_level, "pgstar: worker booting on port %d", port);
+	elog(pgstar_log_level, "pgstar: GUC parameters configured - port=%d, log_level=%d, database='%s', user='%s', ui_cache_ttl=%d",
+		pgstar_port, pgstar_log_level, pgstar_database, pgstar_user ? pgstar_user : "(null)", pgstar_ui_cache_ttl);
 
 #if PG_VERSION_NUM >= 110000
 	BackgroundWorkerInitializeConnection(pgstar_database, pgstar_user, 0);
