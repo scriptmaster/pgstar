@@ -85,9 +85,15 @@ auto-build-run:
 		make build-install-run'
 
 auto-run:
-	find . -maxdepth 1 -name "run.sql" | entr -s 'make run'
+	@while true; do \
+		make build-install-run || true; \
+		echo "Starting log tail (Ctrl+C to restart auto-run)..."; \
+		make log || true; \
+		echo "Log tail ended, restarting auto-run..."; \
+		sleep 1; \
+	done
 
-auto: auto-build-run
+auto: auto-run
 
 run:
 	PGPASSWORD="pgstar" psql -U pgstar -d pgstar -h localhost -f ./run.sql
@@ -116,6 +122,17 @@ log logs:
 		fi; \
 		echo "Following $$latest"; \
 		tail -f "$$latest"'
+
+tail:
+	@echo "Showing recent PostgreSQL logs (last 200 lines)..."
+	sudo journalctl -u postgresql --no-pager -n 200
+	@echo "Tailing latest PostgreSQL log file under /var/lib/postgresql/14/main/log (Ctrl+C to stop)..."
+	@sudo sh -c 'latest=$$(ls -1t /var/lib/postgresql/14/main/log/*.log 2>/dev/null | head -n 1); \
+		if [ -z "$$latest" ]; then \
+			echo "No PostgreSQL log files found in /var/lib/postgresql/14/main/log"; \
+			exit 1; \
+		fi; \
+		tail -n 100 "$$latest"'
 
 git-status:
 	git status -b

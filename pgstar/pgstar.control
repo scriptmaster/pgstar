@@ -1,4 +1,4 @@
-comment = 'pgstar helpers'
-default_version = '1.20'
+comment = 'pgstar A CRM System Extension'
+default_version = '1.21'
 relocatable = true
 module_pathname = '$libdir/pgstar'

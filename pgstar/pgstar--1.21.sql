@@ -149,8 +149,8 @@ VALUES (
 ',
   'text/html; charset=utf-8',
   '[]'::jsonb,
-  'pages_index.js',
-  'pages_index.css',
+  '',
+  '',
   FALSE
 )
 ON CONFLICT (page_name) DO UPDATE
@@ -168,14 +168,14 @@ VALUES (
   'dashboard',
   'main',
   '<section>
-     <h1>Dashboard</h1>
+     <h1>PGSTAR Dashboard</h1>
      <p data-star>Welcome to pgstar dashboard.</p>
    </section>
 ',
   'text/html; charset=utf-8',
   '[]'::jsonb,
-  'pages_index.js',
-  'pages_index.css',
+  '',
+  'https://unpkg.com/7.css@0.21.1/dist/7.css',
   FALSE
 )
 ON CONFLICT (page_name) DO UPDATE

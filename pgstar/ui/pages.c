@@ -1,6 +1,7 @@
 #include "postgres.h"
 
 #include "pgstar.h"
+#include "pages_layout.h"
 
 #include "access/xact.h"
 #include "executor/spi.h"
@@ -33,18 +34,6 @@ static void pgstar_ui_cache_put(const char *key, const char *body, const char *c
 static bool pgstar_ui_render_page(const char *page_name, char **body, const char **content_type);
 static bool pgstar_ui_fetch_asset(const char *kind, const char *name,
 								  char **body, const char **content_type);
-
-static void pgstar_ui_build_html_page(const char *page_name,
-									  const char *parent_tag,
-									  const char *html_fragment,
-									  Jsonb *meta,
-									  const char *js_names,
-									  const char *css_names,
-									  StringInfo buf);
-static void pgstar_ui_append_meta_tags(StringInfo head, Jsonb *meta);
-static void pgstar_ui_append_css_links(StringInfo head, const char *css_names);
-static void pgstar_ui_append_js_scripts(StringInfo body, const char *js_names);
-static void pgstar_ui_trim(char *str);
 
 /*
  * Public API: ensure pgstar.pages exists and seed built-in rows.
@@ -87,10 +76,13 @@ void
 pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 {
 	char		page_name[128];
+	char		default_page_name[128];
 	const char *path = req->path;
 	char	   *body = NULL;
 	const char *content_type = NULL;
 	char		cache_key[192];
+
+	elog(pgstar_log_level, "pgstar: UI pages request: %s %s", req->method, req->path);
 
 	if (pg_strcasecmp(req->method, "GET") != 0)
 	{
@@ -103,9 +95,11 @@ pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 
 	memset(page_name, 0, sizeof(page_name));
 
+	strlcpy(default_page_name, "dashboard", sizeof(default_page_name));
+
 	if (strcmp(path, "/app") == 0 || strcmp(path, "/app/") == 0)
 	{
-		strlcpy(page_name, "dashboard", sizeof(page_name));
+		strlcpy(page_name, default_page_name, sizeof(page_name));
 	}
 	else if (strncmp(path, "/app/", 5) == 0)
 	{
@@ -114,7 +108,7 @@ pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 
 		if (*suffix == '\0')
 		{
-			strlcpy(page_name, "dashboard", sizeof(page_name));
+			strlcpy(page_name, default_page_name, sizeof(page_name));
 		}
 		else
 		{
@@ -162,6 +156,7 @@ pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 
 	if (pgstar_ui_cache_get(cache_key, &body, &content_type))
 	{
+		elog(pgstar_log_level, "pgstar: UI cache HIT for page '%s' (key: %s)", page_name, cache_key);
 		resp->status_code = 200;
 		resp->status_text = "OK";
 		resp->content_type = content_type;
@@ -175,8 +170,11 @@ pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 		return;
 	}
 
+	elog(pgstar_log_level, "pgstar: UI cache MISS for page '%s' (key: %s), rendering from database", page_name, cache_key);
+
 	if (!pgstar_ui_render_page(page_name, &body, &content_type))
 	{
+		elog(pgstar_log_level, "pgstar: UI render_page returned false for '%s'", page_name);
 		resp->status_code = 404;
 		resp->status_text = "Not Found";
 		resp->content_type = "application/json";
@@ -184,18 +182,43 @@ pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 		return;
 	}
 
-	pgstar_ui_cache_put(cache_key, pstrdup(body), content_type);
+	elog(pgstar_log_level, "pgstar: UI render_page succeeded, body=%p, content_type=%p", 
+		 (void *)body, (void *)content_type);
+
+	if (body == NULL)
+	{
+		elog(WARNING, "pgstar: UI render_page returned NULL body for '%s'", page_name);
+		resp->status_code = 500;
+		resp->status_text = "Internal Server Error";
+		resp->content_type = "application/json";
+		resp->body = pstrdup("{\"error\":\"internal error: null body\"}\n");
+		return;
+	}
+
+	if (content_type == NULL)
+	{
+		elog(WARNING, "pgstar: UI render_page returned NULL content_type for '%s'", page_name);
+		content_type = "text/html; charset=utf-8";
+	}
+
+	elog(pgstar_log_level, "pgstar: UI cache PUT for page '%s' (key: %s), body_len=%zu, content_type='%s'", 
+		 page_name, cache_key, body ? strlen(body) : 0, content_type ? content_type : "(null)");
+	
+	char *body_cache = pstrdup(body); // this copy is for the cache and freed later.
+	// elog(pgstar_log_level, "pgstar: UI cache PUT: body_copy created at %p", (void *)body_cache);
+
+	pgstar_ui_cache_put(cache_key, body_cache, content_type);
+	// elog(pgstar_log_level, "pgstar: UI cache PUT completed");
 
 	resp->status_code = 200;
 	resp->status_text = "OK";
 	resp->content_type = pstrdup(content_type);
 	resp->body = pstrdup(body);
-	// resp->content_type = "text/html";
-	// resp->body = "test 1.5";
+
 	pfree(body);
-	// pgstar_safe_pfree(body); // Safe wrapper that checks for NULL and handles errors gracefully
 	pgstar_safe_pfree((void *) content_type);
-	// pgstar_safe_pfree(body);
+
+	elog(pgstar_log_level, "pgstar: UI pages route completed successfully");
 }
 
 /*
@@ -383,10 +406,35 @@ pgstar_ui_cache_put(const char *key, const char *body, const char *content_type)
 	int			slot = -1;
 	time_t		oldest = 0;
 
+	elog(pgstar_log_level, "pgstar: cache_put entry: key=%s, body=%p, content_type=%p", 
+		 key ? key : "(null)", (void *)body, (void *)content_type);
+
 	if (pgstar_ui_cache_ttl <= 0)
+	{
+		elog(pgstar_log_level, "pgstar: cache_put: cache disabled (ttl=%d)", pgstar_ui_cache_ttl);
 		return;
+	}
+
+	if (key == NULL)
+	{
+		elog(WARNING, "pgstar: cache_put: NULL key, skipping");
+		return;
+	}
+
+	if (body == NULL)
+	{
+		elog(WARNING, "pgstar: cache_put: NULL body for key '%s', skipping", key);
+		return;
+	}
+
+	if (content_type == NULL)
+	{
+		elog(WARNING, "pgstar: cache_put: NULL content_type for key '%s', using default", key);
+		content_type = "text/html; charset=utf-8";
+	}
 
 	now = time(NULL);
+	// elog(pgstar_log_level, "pgstar: cache_put: finding slot, now=%ld", (long)now);
 
 	for (i = 0; i < (int) lengthof(pgstar_ui_cache); i++)
 	{
@@ -395,12 +443,14 @@ pgstar_ui_cache_put(const char *key, const char *body, const char *content_type)
 		if (!e->valid)
 		{
 			slot = i;
+			// elog(pgstar_log_level, "pgstar: cache_put: found empty slot %d", i);
 			break;
 		}
 
 		if (!e->valid || e->expires_at <= now)
 		{
 			slot = i;
+			// elog(pgstar_log_level, "pgstar: cache_put: found expired slot %d", i);
 			break;
 		}
 
@@ -412,18 +462,51 @@ pgstar_ui_cache_put(const char *key, const char *body, const char *content_type)
 	}
 
 	if (slot < 0)
+	{
+		// elog(pgstar_log_level, "pgstar: cache_put: no empty/expired slot, finding LRU slot");
+		/* Find oldest entry (LRU eviction) */
+		slot = 0;
+		oldest = pgstar_ui_cache[0].expires_at;
+		for (i = 1; i < (int) lengthof(pgstar_ui_cache); i++)
+		{
+			PgstarUiCacheEntry *e = &pgstar_ui_cache[i];
+			if (e->expires_at < oldest)
+			{
+				slot = i;
+				oldest = e->expires_at;
+			}
+		}
+		// elog(pgstar_log_level, "pgstar: cache_put: selected LRU slot %d (expires_at=%ld)", slot, (long)oldest);
+	}
+
+	if (slot < 0)
+	{
+		elog(WARNING, "pgstar: cache_put: failed to find slot, cache full");
 		return;
+	}
+
+	// elog(pgstar_log_level, "pgstar: cache_put: using slot %d", slot);
 
 	pgstar_ui_cache[slot].valid = true;
+	// elog(pgstar_log_level, "pgstar: cache_put: copying key");
 	strlcpy(pgstar_ui_cache[slot].key, key, sizeof(pgstar_ui_cache[slot].key));
 
+	elog(pgstar_log_level, "pgstar: cache_put: freeing old body if exists");
 	if (pgstar_ui_cache[slot].body)
-		pfree(pgstar_ui_cache[slot].body);
-	pgstar_ui_cache[slot].body = pstrdup(body);
+	{
+		pgstar_safe_pfree(pgstar_ui_cache[slot].body);
+	}
 
+	// elog(pgstar_log_level, "pgstar: cache_put: storing body");
+	pgstar_ui_cache[slot].body = body;  /* body is already pstrdup'd by caller */
+
+	// elog(pgstar_log_level, "pgstar: cache_put: copying content_type");
 	strlcpy(pgstar_ui_cache[slot].content_type, content_type,
 			sizeof(pgstar_ui_cache[slot].content_type));
+
+	// elog(pgstar_log_level, "pgstar: cache_put: setting expires_at");
 	pgstar_ui_cache[slot].expires_at = now + pgstar_ui_cache_ttl;
+	elog(pgstar_log_level, "pgstar: cache_put: completed successfully");
 }
 
 /* -------------------------------------------------------------------------
@@ -507,8 +590,14 @@ pgstar_ui_render_page(const char *page_name, char **body, const char **content_t
 									  css_names,
 									  &buf);
 
-			*body = buf.data;
+			/* Copy buf.data before SPI_finish() and CommitTransactionCommand() 
+			 * reset the memory context. The caller will own this copy. */
+			*body = pstrdup(buf.data);
 			*content_type = pstrdup(ct);
+			
+			/* Free the StringInfo buffer since we've copied its data */
+			pfree(buf.data);
+			
 			found = true;
 		}
 	}
@@ -631,233 +720,11 @@ pgstar_ui_fetch_asset(const char *kind, const char *name,
 	return found;
 }
 
-/* -------------------------------------------------------------------------
- * HTML helpers
- * -------------------------------------------------------------------------
+/* HTML helper functions have been moved to separate files:
+ * - ui/pages_layout.c: pgstar_ui_build_html_page()
+ * - ui/meta_tags.c: pgstar_ui_append_meta_tags()
+ * - ui/css_links.c: pgstar_ui_append_css_links()
+ * - ui/js_scripts.c: pgstar_ui_append_js_scripts()
  */
-static void
-pgstar_ui_build_html_page(const char *page_name,
-						  const char *parent_tag,
-						  const char *html_fragment,
-						  Jsonb *meta,
-						  const char *js_names,
-						  const char *css_names,
-						  StringInfo buf)
-{
-	bool		use_main = (parent_tag && strcmp(parent_tag, "main") == 0);
-
-	appendStringInfoString(buf, "<!doctype html>\n<html lang=\"en\">\n<head>\n");
-	appendStringInfoString(buf, "  <meta charset=\"utf-8\">\n");
-	appendStringInfo(buf, "  <title>%s</title>\n",
-					 page_name ? page_name : "pgstar");
-
-	if (meta != NULL)
-		pgstar_ui_append_meta_tags(buf, meta);
-
-	pgstar_ui_append_css_links(buf, css_names);
-
-	appendStringInfoString(buf, "</head>\n<body>\n");
-
-	if (use_main)
-	{
-		appendStringInfoString(buf, "<main>\n");
-		appendStringInfoString(buf, html_fragment);
-		appendStringInfoString(buf, "\n</main>\n");
-	}
-	else
-	{
-		appendStringInfoString(buf, html_fragment);
-		appendStringInfoString(buf, "\n");
-	}
-
-	pgstar_ui_append_js_scripts(buf, js_names);
-
-	appendStringInfoString(buf, "\n</body>\n</html>\n");
-}
-
-static void
-pgstar_ui_append_meta_tags(StringInfo head, Jsonb *meta)
-{
-	JsonbIterator *it;
-	JsonbValue	v;
-	int			r;
-	bool		in_object = false;
-	char	   *current_key = NULL;
-	char	   *http_equiv = NULL;
-	char	   *name = NULL;
-	char	   *content = NULL;
-
-	if (meta == NULL)
-		return;
-
-	it = JsonbIteratorInit(&meta->root);
-
-	while ((r = JsonbIteratorNext(&it, &v, false)) != WJB_DONE)
-	{
-		if (r == WJB_BEGIN_OBJECT)
-		{
-			in_object = true;
-			if (http_equiv)
-				pfree(http_equiv);
-			if (name)
-				pfree(name);
-			if (content)
-				pfree(content);
-			http_equiv = name = content = NULL;
-		}
-		else if (r == WJB_END_OBJECT)
-		{
-			if (in_object)
-			{
-				if (http_equiv && content)
-				{
-					appendStringInfo(head,
-									 "  <meta http-equiv=\"%s\" content=\"%s\">\n",
-									 http_equiv,
-									 content);
-				}
-				else if (name && content)
-				{
-					appendStringInfo(head,
-									 "  <meta name=\"%s\" content=\"%s\">\n",
-									 name,
-									 content);
-				}
-			}
-			in_object = false;
-		}
-		else if (r == WJB_KEY && v.type == jbvString)
-		{
-			if (current_key)
-			{
-				pfree(current_key);
-				current_key = NULL;
-			}
-			current_key = pnstrdup(v.val.string.val, v.val.string.len);
-		}
-		else if (r == WJB_VALUE && current_key != NULL)
-		{
-			if (v.type == jbvString)
-			{
-				char   *val = pnstrdup(v.val.string.val, v.val.string.len);
-
-				if (pg_strcasecmp(current_key, "http-equiv") == 0)
-				{
-					if (http_equiv)
-						pfree(http_equiv);
-					http_equiv = val;
-				}
-				else if (pg_strcasecmp(current_key, "name") == 0)
-				{
-					if (name)
-						pfree(name);
-					name = val;
-				}
-				else if (pg_strcasecmp(current_key, "content") == 0)
-				{
-					if (content)
-						pfree(content);
-					content = val;
-				}
-				else
-				{
-					pfree(val);
-				}
-			}
-
-			pfree(current_key);
-			current_key = NULL;
-		}
-	}
-
-	if (current_key)
-		pfree(current_key);
-	if (http_equiv)
-		pfree(http_equiv);
-	if (name)
-		pfree(name);
-	if (content)
-		pfree(content);
-}
-
-static void
-pgstar_ui_append_css_links(StringInfo head, const char *css_names)
-{
-	char	   *work;
-	char	   *token;
-	char	   *saveptr = NULL;
-
-	if (css_names == NULL || css_names[0] == '\0')
-		return;
-
-	work = pstrdup(css_names);
-	pgstar_ui_trim(work);
-
-	for (token = strtok_r(work, ",", &saveptr);
-		 token != NULL;
-		 token = strtok_r(NULL, ",", &saveptr))
-	{
-		pgstar_ui_trim(token);
-		if (token[0] == '\0')
-			continue;
-
-		appendStringInfo(head,
-						 "  <link rel=\"stylesheet\" href=\"/static/css/%s\">\n",
-						 token);
-	}
-
-	pfree(work);
-}
-
-static void
-pgstar_ui_append_js_scripts(StringInfo body, const char *js_names)
-{
-	char	   *work;
-	char	   *token;
-	char	   *saveptr = NULL;
-
-	if (js_names == NULL || js_names[0] == '\0')
-		return;
-
-	work = pstrdup(js_names);
-	pgstar_ui_trim(work);
-
-	for (token = strtok_r(work, ",", &saveptr);
-		 token != NULL;
-		 token = strtok_r(NULL, ",", &saveptr))
-	{
-		pgstar_ui_trim(token);
-		if (token[0] == '\0')
-			continue;
-
-		appendStringInfo(body,
-						 "  <script src=\"/static/js/%s\"></script>\n",
-						 token);
-	}
-
-	pfree(work);
-}
-
-static void
-pgstar_ui_trim(char *str)
-{
-	char   *start = str;
-	char   *end;
-
-	if (str == NULL)
-		return;
-
-	while (*start && isspace((unsigned char) *start))
-		start++;
-
-	if (start != str)
-		memmove(str, start, strlen(start) + 1);
-
-	end = str + strlen(str);
-	while (end > str && isspace((unsigned char) *(end - 1)))
-		end--;
-
-	*end = '\0';
-}
 
 

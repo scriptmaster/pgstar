@@ -1,4 +1,4 @@
-DROP EXTENSION IF EXISTS pgstar CASCADE;
+-- DROP EXTENSION IF EXISTS pgstar CASCADE;
 -- DROP EXTENSION IF EXISTS pgstar;
 CREATE EXTENSION pgstar;
 
@@ -24,3 +24,5 @@ SELECT pgstar_version();
 -- );
 
 select * from pgstar.pages;
+select * from pgstar.jobs;
+-- DELETE FROM pgstar.pages;

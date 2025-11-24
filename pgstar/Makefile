@@ -8,7 +8,7 @@ ARCHIVE_DIR := $(GENERATED_DIR)/archive
 
 .DEFAULT_GOAL := all
 
-PG_CPPFLAGS += -I$(GENERATED_DIR) -Icore
+PG_CPPFLAGS += -I$(GENERATED_DIR) -Icore -Iui
 
 UI_DIR := ui
 UI_ROOT_HTML := $(UI_DIR)/root.html

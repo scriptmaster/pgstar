@@ -23,7 +23,7 @@ pgstar_safe_pfree(void *ptr)
 	PG_CATCH();
 	{
 		/* Log warning and ignore errors - better than crashing */
-		elog(INFO, "WARN: pgstar_safe_pfree failed to free pointer %p, ignoring error", ptr);
+		elog(WARNING, "WARN: pgstar_safe_pfree failed to free pointer %p, ignoring error", ptr);
 		FlushErrorState();
 	}
 	PG_END_TRY();
