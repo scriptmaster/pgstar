@@ -163,14 +163,46 @@ SET parent_tag   = EXCLUDED.parent_tag,
     updated_at   = now()
 WHERE pgstar.pages.is_custom = FALSE;
 
-DELETE FROM pgstar.pages WHERE page_name='dashboard';
+-- DELETE FROM pgstar.pages WHERE page_name='dashboard';
 INSERT INTO pgstar.pages (page_name, parent_tag, html, content_type, meta, js, css, is_custom)
 VALUES (
   'dashboard',
-  'main',
-  '<section>
-     <h1>PGSTAR Dashboard!</h1>
-     <p data-star>Welcome to pgstar dashboard.</p>
+  'div',
+  '<section class="panel">
+    <aside>
+      <ul
+        class="tree-view has-connector has-collapse-button has-container has-scrollbar"
+      >
+        <li><a href="#intro">Welcome</a></li>
+        <li>
+          <a href="#install">App</a>
+          <ul>
+            <li><a href="#scoping">Users</a></li>
+            <li><a href="#tree-shaking">Jobs</a></li>
+          </ul>
+        </li>
+      </ul>
+    </aside>
+    <main>
+      <ul role="menubar">
+        <li role="menuitem" tabindex="0">Create</li>
+        <li role="menuitem" tabindex="0">Read</li>
+        <li role="menuitem" tabindex="0">Update</li>
+        <li role="menuitem" tabindex="0">Delete</li>
+        <div class="searchbox mt-1">
+          <input type="search" placeholder="Filter" />
+          <button aria-label="search"></button>
+        </div>
+      </ul>
+      <div class="window-body m-0">
+        <table>
+          <tr>
+            <th>id</th>
+            <th>name</th>
+          </tr>
+        </table>
+      </div>
+    </main>
    </section>
 ',
   'text/html; charset=utf-8',

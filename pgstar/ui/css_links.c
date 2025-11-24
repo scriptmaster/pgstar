@@ -20,8 +20,14 @@ pgstar_ui_append_css_links(StringInfo head, const char *css_names)
 	if (css_names == NULL || css_names[0] == '\0')
 	{
 		/* Default CDN CSS links when none specified */
+
+		// appendStringInfoString(head,
+		// 	"  <link rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/npm/@picocss/pico@2.1.1/css/pico.classless.min.css\">\n");
+
+		// emerald-v2.css
 		appendStringInfoString(head,
-							 "  <link rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/npm/@picocss/pico@2.1.1/css/pico.classless.min.css\">\n");
+							 "  <link rel=\"stylesheet\" href=\"https://emeraldcss-deno.scriptmaster.deno.net/emerald-v2.css\">\n");
+		// 7.css
 		appendStringInfoString(head,
 							 "  <link rel=\"stylesheet\" href=\"https://unpkg.com/7.css@0.21.1/dist/7.css\">\n");
 		return;

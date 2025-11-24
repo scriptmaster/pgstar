@@ -1,6 +1,6 @@
-DROP EXTENSION IF EXISTS pgstar CASCADE;
+-- DROP EXTENSION IF EXISTS pgstar CASCADE;
 CREATE EXTENSION pgstar;
--- ALTER EXTENSION pgstar UPDATE;
+ALTER EXTENSION pgstar UPDATE;
 
 SELECT pgstar_version();
 -- SELECT pgstar_tcp_server();

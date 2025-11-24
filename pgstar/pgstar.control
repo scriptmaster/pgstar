@@ -1,4 +1,4 @@
 comment = 'pgstar A CRM System Extension'
-default_version = '1.22'
+default_version = '1.23'
 relocatable = true
 module_pathname = '$libdir/pgstar'
