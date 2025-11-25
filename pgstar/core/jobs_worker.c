@@ -162,7 +162,6 @@ pgstar_jobs_tick(void)
 		Datum		end_range;
 		bool		end_range_isnull;
 		int32		batch_count;
-		int64		prev_records_processed;
 		Datum		prev_completed_time;
 		bool		prev_completed_isnull;
 		char	   *table_name;
@@ -198,11 +197,7 @@ pgstar_jobs_tick(void)
 		if (isnull || batch_count <= 0)
 			batch_count = 1000;
 
-		prev_records_processed = DatumGetInt64(SPI_getbinval(tup, tupdesc, 9, &isnull));
-		if (isnull)
-			prev_records_processed = 0;
-
-		prev_completed_time = SPI_getbinval(tup, tupdesc, 10, &prev_completed_isnull);
+		prev_completed_time = SPI_getbinval(tup, tupdesc, 9, &prev_completed_isnull);
 
 		MemSet(values, 0, sizeof(values));
 		MemSet(nulls, 0, sizeof(nulls));

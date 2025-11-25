@@ -167,33 +167,69 @@ WHERE pgstar.pages.is_custom = FALSE;
 INSERT INTO pgstar.pages (page_name, parent_tag, html, content_type, meta, js, css, is_custom)
 VALUES (
   'dashboard',
-  'main',
-  '<section class="panel">
+  '',
+  '<section class="panel" hx-ext="client-side-templates">
     <aside>
       <ul
         class="tree-view has-connector has-collapse-button has-container has-scrollbar"
       >
-        <li><a href="#intro">Welcome</a></li>
+        <li><a href="/app/">Dashboard</a></li>
         <li>
-          <a href="#install">App</a>
+          <a href="/app/tables">Tables</a>
           <ul>
-            <li><a href="#scoping">Users</a></li>
-            <li><a href="#tree-shaking">Jobs</a></li>
+            <li><a href="/app/tables/users">Users</a></li>
+            <li><a href="/app/tables/users">Jobs</a></li>
           </ul>
         </li>
       </ul>
     </aside>
     <main>
-      <ul role="menubar">
-        <li role="menuitem" tabindex="0">Create</li>
-        <li role="menuitem" tabindex="0">Read</li>
-        <li role="menuitem" tabindex="0">Update</li>
-        <li role="menuitem" tabindex="0">Delete</li>
-        <div class="searchbox mt-1">
-          <input type="search" placeholder="Filter" />
-          <button aria-label="search"></button>
-        </div>
-      </ul>
+      <section class="titlebar">
+        <ul role="menubar">
+          <li role="menuitem" tabindex="0">
+            List
+            <ul role="menu">
+              <li role="menuitem" tabindex="0" aria-haspopup="true">
+                View Columns
+                <ul role="menu">
+                  <li role="menuitem"><input type="checkbox" id="col1" checked><label for="col1">id</label></li>
+                </ul>
+              </li>
+              <li role="menuitem" tabindex="0">
+                <a href="#first-page">First Page</a></li>
+              <li role="menuitem" tabindex="0">
+                <a href="#prev-page">Previous Page</a></li>
+              <li role="menuitem" tabindex="0">
+                <a href="#next-page">Next Page</a></li>
+              <li role="menuitem" tabindex="0">
+                <a href="#last-page">Last Page</a></li>
+              <li role="menuitem" aria-haspopup="true">Page Number: 1<ul role="menu"></ul></li>
+              <li role="menuitem" aria-haspopup="true">
+                Page Size: 25
+                <ul role="menu">
+                  <li role="menuitem">
+                    <a href="#page-size-25">25</a></li>
+                  <li role="menuitem">
+                    <a href="#page-size-100">100</a></li>
+                  <li role="menuitem">
+                    <a href="#page-size-500">500</a></li>
+                  <li role="menuitem">
+                    <a href="#page-size-1000">1000</a></li>
+                </ul>
+              </li>
+            </ul>
+          </li>
+          <li role="menuitem" tabindex="0">Create</li>
+          <li role="menuitem" tabindex="0">Read</li>
+          <li role="menuitem" tabindex="0">Update</li>
+          <li role="menuitem" tabindex="0">Delete</li>
+          <li role="menuitem" tabindex="0">Options</li>
+          <div class="searchbox mt-1">
+            <input type="search" placeholder="Filter" />
+            <button aria-label="search"></button>
+          </div>
+        </ul>
+      </section>
       <div class="window-body m-0">
         <table>
           <tr>
@@ -208,6 +244,7 @@ VALUES (
   'text/html; charset=utf-8',
   '[]'::jsonb,
   '',
+  -- 'https://unpkg.com/htmx.org@2.0.8/dist/htmx.min.js,https://unpkg.com/htmx.org@1.9.12/dist/ext/client-side-templates.js,https://unpkg.com/mustache@latest/mustache.min.js',
   '',
   FALSE
 )

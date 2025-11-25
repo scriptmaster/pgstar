@@ -113,9 +113,9 @@ psql2:
 	sudo -u postgres psql
 
 log logs:
-	@echo "Showing recent PostgreSQL logs (last 200 lines)..."
-	sudo journalctl -u postgresql --no-pager -n 200
-	sleep 1
+	# @echo "Showing recent PostgreSQL logs (last 200 lines)..."
+	# sudo journalctl -u postgresql --no-pager
+	# sleep 1
 	@echo "Tailing latest PostgreSQL log file under /var/lib/postgresql/14/main/log (Ctrl+C to stop)..."
 	@sudo sh -c 'latest=$$(ls -1t /var/lib/postgresql/14/main/log/*.log 2>/dev/null | head -n 1); \
 		if [ -z "$$latest" ]; then \
@@ -127,7 +127,7 @@ log logs:
 
 tail:
 	@echo "Showing recent PostgreSQL logs (last 200 lines)..."
-	sudo journalctl -u postgresql --no-pager -n 200
+	sudo journalctl -u postgresql --no-pager
 	@echo "Tailing latest PostgreSQL log file under /var/lib/postgresql/14/main/log (Ctrl+C to stop)..."
 	@sudo sh -c 'latest=$$(ls -1t /var/lib/postgresql/14/main/log/*.log 2>/dev/null | head -n 1); \
 		if [ -z "$$latest" ]; then \

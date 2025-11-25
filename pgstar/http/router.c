@@ -34,7 +34,7 @@ pgstar_route_request(const PgstarRequest *req, PgstarResponse *resp)
 		return;
 	}
 	else
-	/* /app/* is handled by the UI pages router */
+	/* /app/ paths are handled by the UI pages router */
 	if (strncmp(req->path, "/app/", 5) == 0 ||
 		strcmp(req->path, "/app") == 0)
 	{

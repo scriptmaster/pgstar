@@ -20,7 +20,7 @@ pgstart_create_job(PG_FUNCTION_ARGS)
 	text	   *given_stmt_text;
 	Jsonb	   *params = NULL;
 	text	   *range_direction_text;
-	bool		isnull[10];
+	char		isnull[10];
 	Datum		values[10];
 	Oid			argtypes[10];
 	char	   *job_type;
@@ -77,7 +77,7 @@ pgstart_create_job(PG_FUNCTION_ARGS)
 	pgstar_jobs_ensure_spi_connect();
 
 	memset(values, 0, sizeof(values));
-	memset(isnull, 0, sizeof(isnull));
+	memset(isnull, '\0', sizeof(isnull));
 	memset(argtypes, 0, sizeof(argtypes));
 
 	argtypes[0] = TEXTOID;
@@ -87,7 +87,7 @@ pgstart_create_job(PG_FUNCTION_ARGS)
 	if (cron_expr)
 		values[1] = CStringGetTextDatum(cron_expr);
 	else
-		isnull[1] = true;
+		isnull[1] = 'n';
 
 	argtypes[2] = TEXTOID;
 	values[2] = CStringGetTextDatum(table_name);
@@ -102,7 +102,7 @@ pgstart_create_job(PG_FUNCTION_ARGS)
 	if (params)
 		values[5] = JsonbPGetDatum(params);
 	else
-		isnull[5] = true;
+		isnull[5] = 'n';
 
 	argtypes[6] = TEXTOID;
 	values[6] = CStringGetTextDatum(range_direction);
@@ -112,7 +112,7 @@ pgstart_create_job(PG_FUNCTION_ARGS)
 
 	argtypes[8] = NUMERICOID;
 	if (PG_ARGISNULL(8))
-		isnull[8] = true;
+		isnull[8] = 'n';
 	else
 		values[8] = range_end;
 
@@ -137,10 +137,15 @@ pgstart_create_job(PG_FUNCTION_ARGS)
 				(errmsg("pgstart_create_job: failed to insert job (code %d, rows " UINT64_FORMAT ")",
 						ret, (uint64) SPI_processed)));
 
-	job_id = DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[0],
-										 SPI_tuptable->tupdesc,
-										 1,
-										 &isnull[0]));
+	{
+		bool		isnull_bool;
+
+		job_id = DatumGetInt64(SPI_getbinval(SPI_tuptable->vals[0],
+											 SPI_tuptable->tupdesc,
+											 1,
+											 &isnull_bool));
+		isnull[0] = isnull_bool ? 'n' : '\0';
+	}
 
 	SPI_finish();
 

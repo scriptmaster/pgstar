@@ -22,6 +22,8 @@ pgstar_ui_append_js_scripts(StringInfo body, const char *js_names)
 		/* Default datastar CDN script when none specified */
 		appendStringInfoString(body,
 							 "  <script type=\"module\" src=\"https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-RC.6/bundles/datastar.js\"></script>\n");
+		appendStringInfoString(body,
+							 "  <script master src=\"https://emeraldcss-deno.scriptmaster.deno.net/emerald-star.js\"></script>\n");
 		return;
 	}
 
@@ -32,15 +34,18 @@ pgstar_ui_append_js_scripts(StringInfo body, const char *js_names)
 		 token != NULL;
 		 token = strtok_r(NULL, ",", &saveptr))
 	{
+		const char *type_attr;
+		const char *prefix;
+
 		pgstar_ui_trim(token);
 		if (token[0] == '\0')
 			continue;
 
 		/* Check if token contains "module" keyword */
-		const char *type_attr = (strstr(token, "module") != NULL) ? "type=\"module\"" : "master";
+		type_attr = (strstr(token, "module") != NULL) ? "type=\"module\"" : "master";
 
 		/* Determine prefix: empty for full URLs, /static/js/ for relative paths */
-		const char *prefix = "";
+		prefix = "";
 		if (strncmp(token, "http://", 7) != 0 && strncmp(token, "https://", 8) != 0)
 		{
 			prefix = "/static/js/";

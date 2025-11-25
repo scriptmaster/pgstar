@@ -185,41 +185,46 @@ pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 	elog(pgstar_log_level, "pgstar: UI render_page succeeded, body=%p, content_type=%p", 
 		 (void *)body, (void *)content_type);
 
-	if (body == NULL)
 	{
-		elog(WARNING, "pgstar: UI render_page returned NULL body for '%s'", page_name);
-		resp->status_code = 500;
-		resp->status_text = "Internal Server Error";
-		resp->content_type = "application/json";
-		resp->body = pstrdup("{\"error\":\"internal error: null body\"}\n");
-		return;
-	}
+		bool		content_type_allocated; /* Assume allocated by pgstar_ui_render_page */
+		char	   *body_cache;
 
-	bool		content_type_allocated = true; /* Assume allocated by pgstar_ui_render_page */
-	
-	if (content_type == NULL)
-	{
-		elog(WARNING, "pgstar: UI render_page returned NULL content_type for '%s'", page_name);
-		content_type = pstrdup("text/html; charset=utf-8");
-		content_type_allocated = true; /* We allocated it */
-	}
+		if (body == NULL)
+		{
+			elog(WARNING, "pgstar: UI render_page returned NULL body for '%s'", page_name);
+			resp->status_code = 500;
+			resp->status_text = "Internal Server Error";
+			resp->content_type = "application/json";
+			resp->body = pstrdup("{\"error\":\"internal error: null body\"}\n");
+			return;
+		}
 
-	elog(pgstar_log_level, "pgstar: UI cache PUT for page '%s' (key: %s), body_len=%zu, content_type='%s'", 
-		 page_name, cache_key, body ? strlen(body) : 0, content_type ? content_type : "(null)");
-	
-	char *body_cache = pstrdup(body); // this copy is for the cache and freed later.
-	// elog(pgstar_log_level, "pgstar: UI cache PUT: body_copy created at %p", (void *)body_cache);
+		content_type_allocated = true; /* Assume allocated by pgstar_ui_render_page */
+		
+		if (content_type == NULL)
+		{
+			elog(WARNING, "pgstar: UI render_page returned NULL content_type for '%s'", page_name);
+			content_type = pstrdup("text/html; charset=utf-8");
+			content_type_allocated = true; /* We allocated it */
+		}
 
-	pgstar_ui_cache_put(cache_key, body_cache, content_type);
-	elog(pgstar_log_level, "pgstar: UI cache PUT completed");
+		elog(pgstar_log_level, "pgstar: UI cache PUT for page '%s' (key: %s), body_len=%zu, content_type='%s'", 
+			 page_name, cache_key, body ? strlen(body) : 0, content_type ? content_type : "(null)");
+		
+		body_cache = pstrdup(body); // this copy is for the cache and freed later.
+		// elog(pgstar_log_level, "pgstar: UI cache PUT: body_copy created at %p", (void *)body_cache);
 
-	resp->status_code = 200;
-	resp->status_text = "OK";
-	resp->content_type = pstrdup(content_type);
-	resp->body = pstrdup(body);
+		pgstar_ui_cache_put(cache_key, body_cache, content_type);
+		elog(pgstar_log_level, "pgstar: UI cache PUT completed");
 
-	if (content_type_allocated) {
-		pgstar_safe_pfree(content_type);
+		resp->status_code = 200;
+		resp->status_text = "OK";
+		resp->content_type = pstrdup(content_type);
+		resp->body = pstrdup(body);
+
+		if (content_type_allocated) {
+			pgstar_safe_pfree((void *) content_type);
+		}
 	}
 
 	/* Note: We don't free 'body' or 'content_type' here because:
@@ -510,7 +515,7 @@ pgstar_ui_cache_put(const char *key, const char *body, const char *content_type)
 	}
 
 	// elog(pgstar_log_level, "pgstar: cache_put: storing body");
-	pgstar_ui_cache[slot].body = body;  /* body is already pstrdup'd by caller */
+	pgstar_ui_cache[slot].body = (char *) body;  /* body is already pstrdup'd by caller */
 
 	// elog(pgstar_log_level, "pgstar: cache_put: copying content_type");
 	strlcpy(pgstar_ui_cache[slot].content_type, content_type,
