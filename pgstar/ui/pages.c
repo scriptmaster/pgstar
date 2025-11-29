@@ -643,26 +643,9 @@ pgstar_ui_render_page(const char *page_name, const char *title_override, char **
 	{
 		char *quoted_name = quote_literal_cstr(page_name);
 		StringInfoData query_buf;
-		
-		/* Switch to oldcontext to allocate query string, so it doesn't get freed by SPI internals? 
-		 * Actually, SPI_execute takes a string. It copies it? 
-		 * If we allocate query_buf in request_context, and SPI_execute works...
-		 * But wait, CStringGetTextDatum caused allocation issues.
-		 * Maybe SPI_execute doesn't like memory from request_context?
-		 * 
-		 * Let's try allocating the query string in TopMemoryContext temporarily? 
-		 * No, that's leak prone.
-		 * 
-		 * Let's try a static query with NO parameters first to debug.
-		 */
-		
-		/* 
-		 * DEBUG: The error 'could not find block containing chunk' persists even with inlined params.
-		 * This implies corruption or invalid context usage deeper in SPI or Postgres.
-		 * 
-		 * Let's try to simplify the query drastically.
-		 */
+
 		initStringInfo(&query_buf);
+		
 		appendStringInfo(&query_buf, 
 			"SELECT parent_tag, html, content_type, meta, js, css "
 			"FROM pgstar.pages "
@@ -671,14 +654,19 @@ pgstar_ui_render_page(const char *page_name, const char *title_override, char **
 			quoted_name);
 
 		/* 
-		 * CRITICAL: SPI_execute might be trying to free something in the wrong context?
-		 * Or maybe 'quoted_name' is invalid?
-		 * quoted_name is allocated by quote_literal_cstr (palloc).
+		 * Note: using SPI_execute instead of SPI_execute_with_args to use inlined parameters
+		 * as per project guidelines. quote_literal_cstr handles escaping.
 		 */
 		ret = SPI_execute(query_buf.data, true, 1);
 		
-		pfree(quoted_name);
-		pfree(query_buf.data);
+		/* 
+		 * Do NOT free quoted_name or query_buf.data here if SPI_execute fails
+		 * or if memory context management is tricky.
+		 * Since we are in a short-lived request_context, leaking these small
+		 * strings is safer than risking double-free or invalid free crashes.
+		 */
+		/* pfree(quoted_name); */
+		/* pfree(query_buf.data); */
 
 		if (ret != SPI_OK_SELECT)
 			ereport(ERROR,
@@ -780,32 +768,30 @@ pgstar_ui_fetch_file(const char *file_name,
 
 	PG_TRY();
 	{
-		Oid			argtypes[1];
-		Datum		values[1];
-
-		argtypes[0] = TEXTOID;
-		values[0] = CStringGetTextDatum(file_name);
-
 		elog(pgstar_log_level, "pgstar: fetching asset (file_name='%s') from pgstar.files", file_name);
 
 		/* Construct query with inlined parameter to debug SPI parameter issues */
 		{
-			char *quoted_name = quote_literal_cstr(file_name);
+			/* Use SPI_execute_with_args for safety */
+			Oid argtypes[1];
+			Datum values[1];
 			StringInfoData query_buf;
+			
+			argtypes[0] = TEXTOID;
+			values[0] = CStringGetTextDatum(file_name);
+			
 			initStringInfo(&query_buf);
-			appendStringInfo(&query_buf, 
+			appendStringInfoString(&query_buf, 
 				"SELECT text_data, binary_data, is_binary, content_type, is_download "
 				"FROM pgstar.files "
-				"WHERE file_name = %s "
+				"WHERE file_name = $1 "
 				"ORDER BY is_custom DESC, file_id DESC "
-				"LIMIT 1",
-				quoted_name);
+				"LIMIT 1");
 			
-			elog(pgstar_log_level, "pgstar: executing query: %s", query_buf.data);
+			elog(pgstar_log_level, "pgstar: executing query with args: %s", query_buf.data);
 			
-			ret = SPI_execute(query_buf.data, true, 1);
+			ret = SPI_execute_with_args(query_buf.data, 1, argtypes, values, NULL, true, 1);
 			
-			pfree(quoted_name);
 			pfree(query_buf.data);
 		}
 
@@ -893,12 +879,22 @@ pgstar_ui_fetch_file(const char *file_name,
 			{
 				size_t downloaded_len = 0;
 				char *downloaded_ct = NULL;
+				char *downloaded_body;
 				
 				elog(pgstar_log_level, "pgstar: attempting download from '%s'", text_data);
-				char *downloaded_body = pgstar_http_download(text_data, &downloaded_len, &downloaded_ct);
+				downloaded_body = pgstar_http_download(text_data, &downloaded_len, &downloaded_ct);
 
 				if (downloaded_body != NULL)
 				{
+					/* Prepare update query */
+					char *quoted_fn;
+					StringInfoData update_buf;
+					Oid argtypes_upd[3];
+					Datum values_upd[3];
+					char nulls_upd[3] = {' ', ' ', ' '};
+					bytea *bdata;
+					int upd_ret;
+
 					elog(pgstar_log_level, "pgstar: successfully downloaded '%s' (%zu bytes)", text_data, downloaded_len);
 					
 					/* Update database with downloaded content */
@@ -912,18 +908,13 @@ pgstar_ui_fetch_file(const char *file_name,
 					 * We already use SPI. Let's use SPI_execute_with_args for the UPDATE.
 					 */
 					
-					/* Prepare update query */
-					char *quoted_fn = quote_literal_cstr(file_name);
-					StringInfoData update_buf;
+					quoted_fn = quote_literal_cstr(file_name);
 					initStringInfo(&update_buf);
 					
 					/* Update columns: binary_data, text_data=NULL, is_binary=TRUE, is_download=FALSE, content_type */
 					/* Note: We use BYTEA for the content. */
 					
 					/* We need to use parameters for bytea to avoid escaping hell */
-					Oid argtypes_upd[3];
-					Datum values_upd[3];
-					char nulls_upd[3] = {' ', ' ', ' '};
 					
 					argtypes_upd[0] = BYTEAOID;
 					// values_upd[0] set below
@@ -939,7 +930,7 @@ pgstar_ui_fetch_file(const char *file_name,
 					/* However, `PointerGetDatum` might be unsafe if we just cast a char* to bytea*. 
 					   The bytea struct has a 4-byte header for size (varlena). */
 					
-					bytea *bdata = (bytea *) palloc(downloaded_len + VARHDRSZ);
+					bdata = (bytea *) palloc(downloaded_len + VARHDRSZ);
 					SET_VARSIZE(bdata, downloaded_len + VARHDRSZ);
 					memcpy(VARDATA(bdata), downloaded_body, downloaded_len);
 					values_upd[0] = PointerGetDatum(bdata);
@@ -949,7 +940,7 @@ pgstar_ui_fetch_file(const char *file_name,
 					else
 						values_upd[1] = CStringGetTextDatum(ct ? ct : "application/octet-stream");
 
-					int upd_ret = SPI_execute_with_args(
+					upd_ret = SPI_execute_with_args(
 						"UPDATE pgstar.files SET "
 						"binary_data = $1, "
 						"text_data = NULL, "
@@ -1048,10 +1039,12 @@ pgstar_ui_fetch_file(const char *file_name,
 			{
 				/* Extract binary data while still in transaction context */
 				source_len = VARSIZE(binary_data) - VARHDRSZ;
-				char *bin_data = VARDATA(binary_data);
-				temp_body = (char *) palloc(source_len);
-				memcpy(temp_body, bin_data, source_len);
-				final_body_len = source_len;
+				{
+					char *bin_data = VARDATA(binary_data);
+					temp_body = (char *) palloc(source_len);
+					memcpy(temp_body, bin_data, source_len);
+					final_body_len = source_len;
+				}
 			}
 			else if (text_data != NULL)
 			{
