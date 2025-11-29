@@ -108,6 +108,8 @@ pgstar_http_download(const char *url, size_t *len, char **content_type)
 	*len = 0;
 	if (content_type) *content_type = NULL;
 
+	elog(pgstar_log_level, "pgstar: http_download start: %s", url);
+
 	if (!parse_url(url, host, sizeof(host), &port, path, sizeof(path), &is_ssl))
 	{
 		elog(WARNING, "pgstar: invalid url: %s", url);

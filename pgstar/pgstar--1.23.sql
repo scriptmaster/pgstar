@@ -100,17 +100,21 @@ SET text_data = EXCLUDED.text_data,
 WHERE pgstar.files.is_custom = FALSE;
 
 -- Add Vue.js reference (stored as URL in text_data for now)
-INSERT INTO pgstar.files (file_name, content_type, text_data, is_binary, is_custom)
+INSERT INTO pgstar.files (file_name, content_type, text_data, is_binary, is_download, is_custom)
 VALUES (
   'js/vue.global.prod.min.js',
   'application/javascript',
   'https://cdnjs.cloudflare.com/ajax/libs/vue/3.5.22/vue.global.prod.min.js',
   FALSE,
+  TRUE,
   FALSE
 )
 ON CONFLICT (file_name) DO UPDATE
 SET text_data = EXCLUDED.text_data,
     content_type = EXCLUDED.content_type,
+    is_download = EXCLUDED.is_download,
+    is_binary = EXCLUDED.is_binary,
+    binary_data = NULL,
     updated_at = now()
 WHERE pgstar.files.is_custom = FALSE;
 
@@ -121,10 +125,21 @@ VALUES (
   'application/javascript',
   $$const { createApp } = Vue;
 
-const app = createApp({});
+const app = createApp({
+    computed: {
+        currentTableSrc() {
+            const path = window.location.pathname;
+            if (path.endsWith('/files')) return '/api/files';
+            if (path.endsWith('/users')) return '/api/public/users';
+            if (path.endsWith('/jobs')) return '/api/jobs';
+            // Default to information schema tables
+            return '/api/information_schema/tables';
+        }
+    }
+});
 
 // Register component with name that works with is attribute
-app.component('vue:data-table', {
+app.component('data-table-grid', {
     template: '#data-table-template',
     props: ['src'],
     
@@ -144,12 +159,14 @@ app.component('vue:data-table', {
     },
     methods: {
         async fetchData() {
+            console.log('Fetching data from:', this.src);
             this.loading = true;
             this.error = null;
             try {
                 const res = await fetch(this.src);
                 if (!res.ok) throw new Error(res.statusText);
                 const data = await res.json();
+                console.log('Data received:', data);
                 // Handle both array and object with rows property
                 if (Array.isArray(data)) {
                     this.rows = data;
@@ -159,6 +176,7 @@ app.component('vue:data-table', {
                     this.rows = [];
                 }
             } catch (err) {
+                console.error('Fetch error:', err);
                 this.error = err.message;
             } finally {
                 this.loading = false;
@@ -176,11 +194,20 @@ app.component('vue:data-table', {
         }
     },
     mounted() {
+        console.log('DataTableGrid mounted, src:', this.src);
         this.fetchData();
+    },
+    // Watch for src changes to re-fetch
+    watch: {
+        src(newSrc) {
+            console.log('Source changed to:', newSrc);
+            this.fetchData();
+        }
     }
 });
 
 app.mount('#app');
+console.log('Vue app mounted');
 $$,
   FALSE,
   FALSE
@@ -611,12 +638,13 @@ VALUES (
           </ul>
         </section>
         <div class="window-body m-0">
-          <section is="vue:data-table" src="/api/information_schema/tables"></section>
+          <data-table-grid :src="currentTableSrc"></data-table-grid>
         </div>
       </main>
     </section>
+  </div>
     
-    <template id="data-table-template">
+  <template id="data-table-template">
       <div v-if="loading" class="loading">Loading...</div>
       <div v-else-if="error" class="error">Error: {{ error }}</div>
       <table v-else>
@@ -635,11 +663,10 @@ VALUES (
         </tbody>
       </table>
     </template>
-  </div>
 ',
   'text/html; charset=utf-8',
   '[]'::jsonb,
-  '',
+  'vue.global.prod.min.js,vue-data-table.js',
   '',
   FALSE
 )

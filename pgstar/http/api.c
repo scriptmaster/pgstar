@@ -69,6 +69,14 @@ pgstar_route_api(const PgstarRequest *req, PgstarResponse *resp)
 		PG_CATCH();
 		{
 			FlushErrorState();
+			
+			/* Cleanup transaction */
+			if (IsTransactionState()) {
+				SPI_finish();
+				PopActiveSnapshot();
+				AbortCurrentTransaction();
+			}
+			
 			if (json) pfree(json);
 			resp->status_code = 500;
 			resp->status_text = "Internal Server Error";
@@ -269,8 +277,15 @@ pgstar_api_exec(const PgstarRequest *req, PgstarResponse *resp)
 	PG_CATCH();
 	{
 		ErrorData  *edata = CopyErrorData();
-
+		
 		FlushErrorState();
+		
+		/* Cleanup transaction */
+		if (IsTransactionState()) {
+			SPI_finish();
+			PopActiveSnapshot();
+			AbortCurrentTransaction();
+		}
 
 		if (used_dynamic && sql_dynamic.data)
 			pfree(sql_dynamic.data);
@@ -407,6 +422,14 @@ pgstar_api_generic_table(const PgstarRequest *req,
 	PG_CATCH();
 	{
 		FlushErrorState();
+		
+		/* Cleanup transaction */
+		if (IsTransactionState()) {
+			SPI_finish();
+			PopActiveSnapshot();
+			AbortCurrentTransaction();
+		}
+		
 		resp->status_code = 500;
 		resp->status_text = "Internal Server Error";
 		resp->content_type = "application/json";

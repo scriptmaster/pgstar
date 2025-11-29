@@ -33,6 +33,9 @@ pgstar_tcp_protocol_route(int client_fd)
 
 		if (!pgstar_tcp_protocol_wait_for_data(client_fd))
 		{
+			/* Only close if we haven't processed any request yet? 
+			 * Actually, if wait_for_data returns false (timeout/error), we close. 
+			 */
 			close(client_fd);
 			return;
 		}

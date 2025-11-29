@@ -17,7 +17,7 @@
 #include <unistd.h>
 
 #include <string.h>
-#include <unistd.h>
+#include "utils/memutils.h"
 
 #ifndef WAIT_EVENT_EXTENSION
 #define WAIT_EVENT_EXTENSION 0
@@ -104,10 +104,31 @@ pgstar_worker(Datum main_arg)
 			break;
 
 		if (rc & WL_SOCKET_READABLE)
+		{
+			/*
+			 * Handle connections. We should create a memory context for handling 
+			 * requests so that we can reset it after each batch of work to prevent leaks.
+			 */
+			MemoryContext request_context = AllocSetContextCreate(CurrentMemoryContext,
+																"pgstar_request_context",
+																ALLOCSET_DEFAULT_SIZES);
+			MemoryContext old_context = MemoryContextSwitchTo(request_context);
+
 			pgstar_tcp_accept_loop(sockfd);
 
+			MemoryContextSwitchTo(old_context);
+			MemoryContextDelete(request_context);
+		}
+
 		if (rc & WL_TIMEOUT)
-			elog(DEBUG3, "pgstar: worker heartbeat");
+		{
+			static int tick_count = 0;
+			tick_count++;
+			// if (tick_count++ % 6 == 0) /* Log every minute (6 * 10s) */
+			elog(pgstar_log_level, "pgstar: http worker heartbeat (tick %d)", tick_count);
+			// else
+			// 	elog(DEBUG3, "pgstar: worker heartbeat");
+		}
 	}
 
 	if (sockfd >= 0)

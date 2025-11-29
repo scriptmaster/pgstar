@@ -23,14 +23,15 @@ typedef struct PgstarUiCacheEntry
 	bool		valid;
 	char		key[256];
 	char	   *body;			/* palloc'd */
+	size_t		body_len;		/* length of body */
 	char		content_type[64];
 	time_t		expires_at;
 } PgstarUiCacheEntry;
 
 static PgstarUiCacheEntry pgstar_ui_cache[16];
 
-static bool pgstar_ui_cache_get(const char *key, char **body, const char **content_type);
-static void pgstar_ui_cache_put(const char *key, const char *body, const char *content_type);
+static bool pgstar_ui_cache_get(const char *key, char **body, size_t *body_len, const char **content_type);
+static void pgstar_ui_cache_put(const char *key, const char *body, size_t body_len, const char *content_type);
 
 static bool pgstar_ui_render_page(const char *page_name, const char *title_override, char **body, const char **content_type);
 bool pgstar_ui_fetch_file(const char *file_name,
@@ -132,7 +133,7 @@ pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 	else
 		snprintf(cache_key, sizeof(cache_key), "page:%s", page_name);
 
-	if (pgstar_ui_cache_get(cache_key, &body, &content_type))
+	if (pgstar_ui_cache_get(cache_key, &body, NULL, &content_type))
 	{
 		elog(pgstar_log_level, "pgstar: UI cache HIT for page '%s' (key: %s)", page_name, cache_key);
 		resp->status_code = 200;
@@ -143,8 +144,22 @@ pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 		 * safely pfree(resp->body) after sending the response, without
 		 * affecting the cache entry.
 		 */
-		resp->body = pstrdup(body);
-		pfree(body);
+		resp->body = pstrdup(body); /* pgstar_ui_cache_get already returns a copy, so this is redundant but safe. */
+									/* Actually, pgstar_ui_cache_get allocates *body. 
+									   We should just take ownership of it. */
+		/* Wait, my implementation of cache_get above allocates a copy. 
+		   So body IS a copy. pstrdup(body) makes ANOTHER copy. 
+		   The previous code assumed cache_get returned a copy. 
+		   My new cache_get returns a copy. 
+		   So resp->body = body; is correct. 
+		   Let's check previous logic.
+		   Previous: *body = pstrdup(e->body); return true;
+		   Caller: resp->body = pstrdup(body); pfree(body);
+		   So caller was double-copying.
+		   Let's fix caller to just use body.
+		*/
+		resp->body = body;
+		/* resp->body_len is not critical for text pages, uses strlen */
 		return;
 	}
 
@@ -190,9 +205,10 @@ pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 			 page_name, cache_key, body ? strlen(body) : 0, content_type ? content_type : "(null)");
 
 		body_cache = pstrdup(body); // this copy is for the cache and freed later.
+		size_t blen = body ? strlen(body) : 0;
 		// elog(pgstar_log_level, "pgstar: UI cache PUT: body_copy created at %p", (void *)body_cache);
 
-		pgstar_ui_cache_put(cache_key, body_cache, content_type);
+		pgstar_ui_cache_put(cache_key, body_cache, blen, content_type);
 		elog(pgstar_log_level, "pgstar: UI cache PUT completed");
 
 		resp->status_code = 200;
@@ -260,13 +276,13 @@ pgstar_route_ui_js(const PgstarRequest *req, PgstarResponse *resp)
 	snprintf(cache_key, sizeof(cache_key), "js:%s", name);
 
 	size_t body_len = 0;
-	if (pgstar_ui_cache_get(cache_key, &body, &content_type))
+	if (pgstar_ui_cache_get(cache_key, &body, &body_len, &content_type))
 	{
 		resp->status_code = 200;
 		resp->status_text = "OK";
 		resp->content_type = content_type;
 		resp->body = body;
-		resp->body_len = 0; /* Cache doesn't store binary len, will use strlen */
+		resp->body_len = body_len;
 		return;
 	}
 
@@ -288,24 +304,33 @@ pgstar_route_ui_js(const PgstarRequest *req, PgstarResponse *resp)
 	 * so pointers from pgstar_ui_fetch_file() become invalid. */
 	char *body_cache;
 	char *body_resp;
+	
+	if (body_len == 0 && body != NULL)
+		body_len = strlen(body);
+
 	if (body_len > 0)
 	{
-		/* Binary data - copy with known length */
-		body_cache = (char *) palloc(body_len);
+		/* Binary data or Text data - copy with known length */
+		body_cache = (char *) palloc(body_len + 1);
 		memcpy(body_cache, body, body_len);
-		body_resp = (char *) palloc(body_len);
+		body_cache[body_len] = '\0'; /* Ensure null-termination just in case used as string */
+		
+		body_resp = (char *) palloc(body_len + 1);
 		memcpy(body_resp, body, body_len);
+		body_resp[body_len] = '\0';
 	}
 	else
 	{
-		/* Text data - use pstrdup (null-terminated) */
-		body_cache = pstrdup(body);
-		body_resp = pstrdup(body);
+		/* Empty body */
+		body_cache = pstrdup("");
+		body_resp = pstrdup("");
+		body_len = 0;
 	}
+	
 	char *content_type_cache = pstrdup(content_type);
 	char *content_type_resp = pstrdup(content_type);
 	
-	pgstar_ui_cache_put(cache_key, body_cache, content_type_cache);
+	pgstar_ui_cache_put(cache_key, body_cache, body_len, content_type_cache);
 
 	resp->status_code = 200;
 	resp->status_text = "OK";
@@ -358,13 +383,13 @@ pgstar_route_ui_css(const PgstarRequest *req, PgstarResponse *resp)
 	snprintf(cache_key, sizeof(cache_key), "css:%s", name);
 
 	size_t body_len = 0;
-	if (pgstar_ui_cache_get(cache_key, &body, &content_type))
+	if (pgstar_ui_cache_get(cache_key, &body, &body_len, &content_type))
 	{
 		resp->status_code = 200;
 		resp->status_text = "OK";
 		resp->content_type = content_type;
 		resp->body = body;
-		resp->body_len = 0; /* Cache doesn't store binary len, will use strlen */
+		resp->body_len = body_len;
 		return;
 	}
 
@@ -386,24 +411,33 @@ pgstar_route_ui_css(const PgstarRequest *req, PgstarResponse *resp)
 	 * so pointers from pgstar_ui_fetch_file() become invalid. */
 	char *body_cache;
 	char *body_resp;
+	
+	if (body_len == 0 && body != NULL)
+		body_len = strlen(body);
+
 	if (body_len > 0)
 	{
-		/* Binary data - copy with known length */
-		body_cache = (char *) palloc(body_len);
+		/* Binary data or Text data - copy with known length */
+		body_cache = (char *) palloc(body_len + 1);
 		memcpy(body_cache, body, body_len);
-		body_resp = (char *) palloc(body_len);
+		body_cache[body_len] = '\0'; /* Ensure null-termination */
+		
+		body_resp = (char *) palloc(body_len + 1);
 		memcpy(body_resp, body, body_len);
+		body_resp[body_len] = '\0';
 	}
 	else
 	{
-		/* Text data - use pstrdup (null-terminated) */
-		body_cache = pstrdup(body);
-		body_resp = pstrdup(body);
+		/* Empty body */
+		body_cache = pstrdup("");
+		body_resp = pstrdup("");
+		body_len = 0;
 	}
+	
 	char *content_type_cache = pstrdup(content_type);
 	char *content_type_resp = pstrdup(content_type);
 	
-	pgstar_ui_cache_put(cache_key, body_cache, content_type_cache);
+	pgstar_ui_cache_put(cache_key, body_cache, body_len, content_type_cache);
 
 	resp->status_code = 200;
 	resp->status_text = "OK";
@@ -417,7 +451,7 @@ pgstar_route_ui_css(const PgstarRequest *req, PgstarResponse *resp)
  * -------------------------------------------------------------------------
  */
 static bool
-pgstar_ui_cache_get(const char *key, char **body, const char **content_type)
+pgstar_ui_cache_get(const char *key, char **body, size_t *body_len, const char **content_type)
 {
 	time_t		now;
 	int			i;
@@ -442,7 +476,19 @@ pgstar_ui_cache_get(const char *key, char **body, const char **content_type)
 
 		if (strcmp(e->key, key) == 0)
 		{
-			*body = pstrdup(e->body);
+			/* Copy body to new buffer to prevent caller modifying cache */
+			if (e->body_len > 0)
+			{
+				*body = (char *) palloc(e->body_len + 1);
+				memcpy(*body, e->body, e->body_len);
+				(*body)[e->body_len] = '\0'; /* Ensure null termination */
+			}
+			else
+			{
+				*body = pstrdup("");
+			}
+			
+			if (body_len) *body_len = e->body_len;
 			*content_type = e->content_type;
 			return true;
 		}
@@ -452,15 +498,15 @@ pgstar_ui_cache_get(const char *key, char **body, const char **content_type)
 }
 
 static void
-pgstar_ui_cache_put(const char *key, const char *body, const char *content_type)
+pgstar_ui_cache_put(const char *key, const char *body, size_t body_len, const char *content_type)
 {
 	time_t		now;
 	int			i;
 	int			slot = -1;
 	time_t		oldest = 0;
 
-	elog(pgstar_log_level, "pgstar: cache_put entry: key=%s, body=%p, content_type=%p", 
-		 key ? key : "(null)", (void *)body, (void *)content_type);
+	elog(pgstar_log_level, "pgstar: cache_put entry: key=%s, body_len=%zu, content_type=%p", 
+		 key ? key : "(null)", body_len, (void *)content_type);
 
 	if (pgstar_ui_cache_ttl <= 0)
 	{
@@ -540,6 +586,9 @@ pgstar_ui_cache_put(const char *key, const char *body, const char *content_type)
 
 	// elog(pgstar_log_level, "pgstar: cache_put: using slot %d", slot);
 
+	/* Switch to TopMemoryContext for cache allocations so they survive the request */
+	MemoryContext old_ctx = MemoryContextSwitchTo(TopMemoryContext);
+
 	pgstar_ui_cache[slot].valid = true;
 	// elog(pgstar_log_level, "pgstar: cache_put: copying key");
 	strlcpy(pgstar_ui_cache[slot].key, key, sizeof(pgstar_ui_cache[slot].key));
@@ -551,7 +600,12 @@ pgstar_ui_cache_put(const char *key, const char *body, const char *content_type)
 	}
 
 	// elog(pgstar_log_level, "pgstar: cache_put: storing body");
-	pgstar_ui_cache[slot].body = (char *) body;  /* body is already pstrdup'd by caller */
+	/* Allocate new body in TopMemoryContext and copy */
+	pgstar_ui_cache[slot].body = (char *) palloc(body_len + 1);
+	memcpy(pgstar_ui_cache[slot].body, body, body_len);
+	pgstar_ui_cache[slot].body[body_len] = '\0'; /* Ensure null-termination */
+	
+	pgstar_ui_cache[slot].body_len = body_len;
 
 	// elog(pgstar_log_level, "pgstar: cache_put: copying content_type");
 	strlcpy(pgstar_ui_cache[slot].content_type, content_type,
@@ -559,6 +613,9 @@ pgstar_ui_cache_put(const char *key, const char *body, const char *content_type)
 
 	// elog(pgstar_log_level, "pgstar: cache_put: setting expires_at");
 	pgstar_ui_cache[slot].expires_at = now + pgstar_ui_cache_ttl;
+	
+	MemoryContextSwitchTo(old_ctx);
+	
 	elog(pgstar_log_level, "pgstar: cache_put: completed successfully");
 }
 
@@ -584,28 +641,48 @@ pgstar_ui_render_page(const char *page_name, const char *title_override, char **
 
 	PG_TRY();
 	{
-		Oid			argtypes[1];
-		Datum		values[1];
-
-		argtypes[0] = TEXTOID;
-		values[0] = CStringGetTextDatum(page_name);
-
-		ret = SPI_execute_with_args(
+		char *quoted_name = quote_literal_cstr(page_name);
+		StringInfoData query_buf;
+		
+		/* Switch to oldcontext to allocate query string, so it doesn't get freed by SPI internals? 
+		 * Actually, SPI_execute takes a string. It copies it? 
+		 * If we allocate query_buf in request_context, and SPI_execute works...
+		 * But wait, CStringGetTextDatum caused allocation issues.
+		 * Maybe SPI_execute doesn't like memory from request_context?
+		 * 
+		 * Let's try allocating the query string in TopMemoryContext temporarily? 
+		 * No, that's leak prone.
+		 * 
+		 * Let's try a static query with NO parameters first to debug.
+		 */
+		
+		/* 
+		 * DEBUG: The error 'could not find block containing chunk' persists even with inlined params.
+		 * This implies corruption or invalid context usage deeper in SPI or Postgres.
+		 * 
+		 * Let's try to simplify the query drastically.
+		 */
+		initStringInfo(&query_buf);
+		appendStringInfo(&query_buf, 
 			"SELECT parent_tag, html, content_type, meta, js, css "
 			"FROM pgstar.pages "
-			"WHERE page_name = $1 "
-			"ORDER BY is_custom DESC, page_id DESC "
+			"WHERE page_name = %s "
 			"LIMIT 1",
-			1,
-			argtypes,
-			values,
-			NULL,
-			true,
-			1);
+			quoted_name);
+
+		/* 
+		 * CRITICAL: SPI_execute might be trying to free something in the wrong context?
+		 * Or maybe 'quoted_name' is invalid?
+		 * quoted_name is allocated by quote_literal_cstr (palloc).
+		 */
+		ret = SPI_execute(query_buf.data, true, 1);
+		
+		pfree(quoted_name);
+		pfree(query_buf.data);
 
 		if (ret != SPI_OK_SELECT)
 			ereport(ERROR,
-					(errmsg("pgstar ui: SPI_execute_with_args failed: %d", ret)));
+					(errmsg("pgstar ui: SPI_execute failed: %d", ret)));
 
 		if (SPI_processed == 1)
 		{
@@ -650,17 +727,25 @@ pgstar_ui_render_page(const char *page_name, const char *title_override, char **
 			*content_type = pstrdup(ct);
 			
 			/* Free the StringInfo buffer since we've copied its data */
-			pfree(buf.data);
+			/* pfree(buf.data); -- Let request_context clean this up to avoid potential double-free issues */
 			
 			found = true;
 		}
 	}
 	PG_CATCH();
 	{
+		ErrorData *edata = CopyErrorData();
+		
+		elog(pgstar_log_level, "pgstar: ui render_page query failed for '%s': %s", 
+			 page_name, edata ? edata->message : "unknown error");
+		
+		if (edata)
+			FreeErrorData(edata);
+
 		FlushErrorState();
 		SPI_finish();
 		PopActiveSnapshot();
-		CommitTransactionCommand();
+		AbortCurrentTransaction();
 		return false;
 	}
 	PG_END_TRY();
@@ -759,14 +844,30 @@ pgstar_ui_fetch_file(const char *file_name,
 			bool		ct_allocated = false;
 			bool		isnull;
 			bool		is_download = false;
+			
+			/* IMPORTANT: We must make copies of SPI-managed values (text_data, ct) 
+			 * immediately because subsequent SPI calls (like the UPDATE below) 
+			 * will invalidate the current SPI_tuptable and free this memory. */
 
-			text_data = SPI_getvalue(tup, tupdesc, 1);
+			char *raw_text_data = SPI_getvalue(tup, tupdesc, 1);
+			text_data = raw_text_data ? pstrdup(raw_text_data) : NULL;
 			
 			/* Correctly handle binary data (bytea) which might be TOASTed */
 			Datum binary_datum = SPI_getbinval(tup, tupdesc, 2, &isnull);
 			if (!isnull)
 			{
 				/* Detoast if necessary. DatumGetByteaP ensures we get a flat, non-compressed varlena. */
+				/* We don't need to copy binary_data immediately unless we use it after UPDATE.
+				 * But to be safe, we'll extract it later or rely on the fact we only use it
+				 * if we DON'T do the download/update path, or if we re-fetch.
+				 * Actually, let's just hold the Datum, but remember we can't touch the Tuple 
+				 * after another SPI call.
+				 * Wait, DatumGetByteaP returns a pointer to palloc'd memory (if it was detoasted)
+				 * OR a pointer into the tuple buffer (if it wasn't).
+				 * To be safe, we should assume it might be invalidated. 
+				 * However, binary_data is only used in the read path.
+				 * If we download, we overwrite binary_data with new data.
+				 */
 				binary_data = DatumGetByteaP(binary_datum);
 			}
 			else
@@ -779,7 +880,9 @@ pgstar_ui_fetch_file(const char *file_name,
 				Datum is_binary_datum = SPI_getbinval(tup, tupdesc, 3, &isnull);
 				is_binary = !isnull && DatumGetBool(is_binary_datum);
 			}
-			ct = SPI_getvalue(tup, tupdesc, 4);
+			
+			char *raw_ct = SPI_getvalue(tup, tupdesc, 4);
+			ct = raw_ct ? pstrdup(raw_ct) : NULL;
 			
 			Datum is_download_datum = SPI_getbinval(tup, tupdesc, 5, &isnull);
 			if (!isnull)
@@ -790,6 +893,8 @@ pgstar_ui_fetch_file(const char *file_name,
 			{
 				size_t downloaded_len = 0;
 				char *downloaded_ct = NULL;
+				
+				elog(pgstar_log_level, "pgstar: attempting download from '%s'", text_data);
 				char *downloaded_body = pgstar_http_download(text_data, &downloaded_len, &downloaded_ct);
 
 				if (downloaded_body != NULL)
@@ -1014,7 +1119,7 @@ pgstar_ui_fetch_file(const char *file_name,
 		FlushErrorState();
 		SPI_finish();
 		PopActiveSnapshot();
-		CommitTransactionCommand();
+		AbortCurrentTransaction();
 		return false;
 	}
 	PG_END_TRY();

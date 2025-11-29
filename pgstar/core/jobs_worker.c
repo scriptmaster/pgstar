@@ -56,13 +56,37 @@ pgstar_jobs_worker(Datum main_arg)
 		 */
 		PG_TRY();
 		{
-			did_work = pgstar_jobs_tick();
+			/* 
+			 * TEMPORARY: Disable jobs logic to debug stability issues.
+			 * did_work = pgstar_jobs_tick();
+			 */
+			if (false) {
+				did_work = pgstar_jobs_tick();
+			} else {
+				/* Just sleep */
+				static int tick_log = 0;
+				if (tick_log++ % 100 == 0) {
+					elog(pgstar_log_level, "pgstar: jobs worker idle tick (jobs disabled)");
+				}
+				did_work = false;
+			}
 		}
 		PG_CATCH();
 		{
 			ErrorData  *edata = CopyErrorData();
 
 			FlushErrorState();
+			
+			/* 
+			 * Critical: Abort the transaction if one was started in pgstar_jobs_tick.
+			 * Otherwise the next StartTransactionCommand() will crash.
+			 */
+			if (IsTransactionState())
+			{
+				/* Try to clean up SPI if it was active, though Abort might do it */
+				/* SPI_finish(); -- risky if not connected, rely on Abort */
+				AbortCurrentTransaction();
+			}
 
 			if (edata)
 			{

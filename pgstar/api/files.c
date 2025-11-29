@@ -74,10 +74,14 @@ pgstar_json_files(void)
 
     appendStringInfoString(&buf, "],\"columns\":[\"file_id\",\"file_name\",\"content_type\",\"is_binary\",\"is_custom\",\"is_download\",\"updated_at\"]}\n");
 
+    /* Copy the result string to a new buffer in the caller's context before finishing SPI */
+    char *result_json = pstrdup(buf.data);
+    pfree(buf.data);
+
     SPI_finish();
     PopActiveSnapshot();
     CommitTransactionCommand();
 
-    return buf.data;
+    return result_json;
 }
 
