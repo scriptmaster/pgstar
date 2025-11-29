@@ -749,7 +749,6 @@ bool
 pgstar_ui_fetch_file(const char *file_name,
 					  char **body, size_t *body_len, const char **content_type)
 {
-	StringInfoData buf;
 	int			ret;
 	bool		found = false;
 	MemoryContext oldcontext;

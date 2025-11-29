@@ -14,6 +14,9 @@
 ### 1. Memory Management (CRITICAL)
 PostgreSQL uses a hierarchical memory context system.
 - **SPI Contexts**: Data returned by `SPI_execute` (e.g., via `SPI_getvalue`, `SPI_getbinval`, or `StringInfo` buffers built inside a Tx) resides in a short-lived transaction context.
+- **Request Scope**: The HTTP worker uses a `request_context` that is reset after every request. Allocations here are temporary.
+- **Cache Scope**: Long-lived data (like `pgstar_ui_cache`) MUST be allocated in `TopMemoryContext`.
+  - Use: `MemoryContext old = MemoryContextSwitchTo(TopMemoryContext); ... allocate ...; MemoryContextSwitchTo(old);`
 - **The Rule**: NEVER return pointers from SPI directly. ALWAYS deep copy them to the caller's memory context *before* the transaction ends.
 - **The Protocol**:
   1. Save caller's context: `MemoryContext old = CurrentMemoryContext;`
@@ -33,9 +36,12 @@ PostgreSQL uses a hierarchical memory context system.
 
 ### 3. Worker Hygiene
 - **Interrupts**: Long-running loops (like HTTP keep-alive in `tcp/protocol.c`) MUST call `CHECK_FOR_INTERRUPTS()` to ensure the worker responds to signals and processes invalidation messages.
+- **Error Handling**: In `PG_CATCH` blocks, ALWAYS call `SPI_finish(); PopActiveSnapshot(); AbortCurrentTransaction();` to ensure the transaction state is reset.
 
 ### 4. Database Querying (SPI)
-- **Inlining vs Parameters**: For simple, critical lookups in background workers, prefer **inlining parameters** (`quote_literal_cstr`) over `SPI_execute_with_args` (`$1`) to avoid plan caching issues.
+- **Parameters**: PREFER `SPI_execute_with_args` (`$1`, `$2`) over manual string building.
+  - Manual string building with `quote_literal_cstr` allocates memory that can be tricky to manage (leading to leaks or premature frees) and is error-prone.
+  - `SPI_execute_with_args` handles parameter types and memory safety natively.
 
 ## Feature Implementation Details
 
@@ -55,3 +61,4 @@ PostgreSQL uses a hierarchical memory context system.
 - **JSON API returning Integers**: Caused by returning `buf.data` (from `StringInfo`) which was allocated in the transaction context. Fixed by `pstrdup`ing the result before `SPI_finish`.
 - **Intermittent Crashes on Download**: Caused by `CommitTransactionCommand()` in `PG_CATCH` block (illegal state). Fixed by using `AbortCurrentTransaction()`.
 - **Broken Binary Data**: Caused by casting TOASTed `datum` directly. Fixed by using `DatumGetByteaP()`.
+- **Segfaults in SPI**: Caused by manual string construction/freeing (`quote_literal_cstr`) and memory context confusion. Fixed by switching to `SPI_execute_with_args`.

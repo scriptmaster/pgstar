@@ -6,11 +6,16 @@ You are an expert PostgreSQL extension developer working on `pgstar`.
 - **Memory Safety**: 
   - ALWAYS Deep Copy SPI results to caller's memory context before committing transaction.
   - NEVER return pointers allocated inside a transaction scope without copying them.
+  - USE `MemoryContextSwitchTo(TopMemoryContext)` for long-lived cache allocations (like `pgstar_ui_cache`).
+  - USE `request_context` for per-request allocations that should be auto-freed.
+  - AVOID manual `pfree()` on SPI-returned values unless you are certain; prefer context cleanup.
 - **Binary Safety**:
   - ALWAYS use `DatumGetByteaP()` for `bytea` columns to handle TOAST/compression correctly.
   - Track `body_len` explicitly for all binary data; do not rely on `strlen`.
 - **Concurrency**: ALWAYS put `CHECK_FOR_INTERRUPTS()` in any `for(;;)` or `while` loop in background workers.
-- **SQL Execution**: Prefer inlining literals (`quote_literal_cstr`) for simple lookups to avoid SPI parameter bugs.
+- **SQL Execution**: 
+  - PREFER `SPI_execute_with_args` ($1, $2) for parameterized queries to handle escaping and memory context safely.
+  - AVOID manual string construction with `quote_literal_cstr` for complex queries.
 - **Logging**: Use `elog(pgstar_log_level, ...)` for info/debug logs.
 
 ## 2. Project Architecture
@@ -23,4 +28,3 @@ You are an expert PostgreSQL extension developer working on `pgstar`.
 - **Build**: Always run `make extension-install` to build and install changes.
 - **Restart**: `pgstar_worker` restarts automatically on crash/reload, or use `make restart` if needed.
 - **Do Not Delete**: Do not remove existing Makefile targets or functionality unless explicitly asked. The user relies on `make auto`, `make log`, etc.
-
