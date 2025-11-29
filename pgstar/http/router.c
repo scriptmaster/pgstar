@@ -68,6 +68,13 @@ pgstar_route_request(const PgstarRequest *req, PgstarResponse *resp)
 		return;
 	}
 	else
+	/* /v1/ paths are routed to AI chat handler */
+	if (strncmp(req->path, "/v1/", 4) == 0)
+	{
+		pgstar_route_v1(req, resp);
+		return;
+	}
+	else
 	/* /ai/ is delegated to the AI router; methods are not restricted here */
 	if (strncmp(req->path, "/ai/", 4) == 0)
 	{

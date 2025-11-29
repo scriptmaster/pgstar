@@ -10,12 +10,38 @@ ARCHIVE_DIR := $(GENERATED_DIR)/archive
 
 PG_CPPFLAGS += -I$(GENERATED_DIR) -Icore -Iui
 
+# Check for c_ncnn library
+C_NCNN_LIB := ../c_ncnn/build/libc_ncnn.so
+C_NCNN_INC := ../c_ncnn/include
+
+# Add c_ncnn support if available
+ifeq ($(wildcard ../c_ncnn/Makefile),)
+    # c_ncnn directory doesn't exist, build without it
+    $(info c_ncnn not found, building pgstar without AI support)
+else
+    # Try to build c_ncnn if it doesn't exist
+    ifeq ($(wildcard $(C_NCNN_LIB)),)
+        $(info Building c_ncnn library...)
+        $(shell $(MAKE) -C ../c_ncnn all 2>/dev/null || true)
+    endif
+    
+    # Add c_ncnn support if library exists
+    ifeq ($(wildcard $(C_NCNN_LIB)),)
+        $(warning c_ncnn library not found after build attempt, continuing without it)
+    else
+        $(info Using c_ncnn library: $(C_NCNN_LIB))
+        PG_CPPFLAGS += -DHAVE_C_NCNN -I$(C_NCNN_INC)
+        # Link against c_ncnn - use system library path or copy to PostgreSQL lib dir
+        SHLIB_LINK += -L../c_ncnn/build -lc_ncnn -Wl,-rpath,/usr/lib/postgresql/14/lib:/usr/local/lib
+    endif
+endif
+
 UI_DIR := ui
 UI_ROOT_HTML := $(UI_DIR)/root.html
 UI_ROOT_C := $(UI_DIR)/root_page.c
 
 # Automatically include all C files in the extension tree
-SRCS := $(wildcard *.c core/*.c api/*.c tcp/*.c tcp/protocols/*.c http/*.c functions/*.c ui/*.c)
+SRCS := $(wildcard *.c core/*.c api/*.c tcp/*.c tcp/protocols/*.c http/*.c functions/*.c ui/*.c ai/*.c)
 OBJS := $(SRCS:.c=.o)
 DATA = $(SQL_VERSIONED)
 PGFILEDESC = "pgstar - mock server helpers and version reporting"

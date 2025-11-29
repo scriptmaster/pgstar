@@ -88,7 +88,7 @@ pgstar_json_tables(void)
                 (errmsg("pgstar: tables query failed: %d", ret)));
 
     initStringInfo(&buf);
-    appendStringInfoString(&buf, "[");
+    appendStringInfoString(&buf, "{\"rows\":[");
 
     for (uint64 i = 0; i < SPI_processed; i++)
     {
@@ -107,11 +107,11 @@ pgstar_json_tables(void)
             appendStringInfoString(&buf, ",");
 
         appendStringInfo(&buf,
-                         "{\"schema\":\"%s\",\"table\":\"%s\"}",
+                         "{\"table_schema\":\"%s\",\"table_name\":\"%s\"}",
                          schema_name, table_name);
     }
 
-    appendStringInfoString(&buf, "]\n");
+    appendStringInfoString(&buf, "],\"columns\":[\"table_schema\",\"table_name\"]}\n");
 
     SPI_finish();
     PopActiveSnapshot();

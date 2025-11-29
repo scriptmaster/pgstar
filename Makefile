@@ -43,6 +43,10 @@ extension-clean: $(EXT_CLEAN_TARGETS)
 extension-uninstall: $(EXT_UNINSTALL_TARGETS)
 
 extension-build-%:
+	@if [ "$*" = "pgstar" ] && [ -d "c_ncnn" ]; then \
+		echo "Building c_ncnn library first..."; \
+		$(MAKE) -C c_ncnn all || true; \
+	fi
 	$(MAKE) -C $*
 
 extension-install-%: extension-build-%

@@ -8,6 +8,7 @@
 #include "tcop/tcopprot.h"
 #include "utils/builtins.h"
 #include "utils/jsonb.h"
+#include "utils/memutils.h"
 #include "utils/snapmgr.h"
 #include "core/spi.h"
 
@@ -31,9 +32,9 @@ static PgstarUiCacheEntry pgstar_ui_cache[16];
 static bool pgstar_ui_cache_get(const char *key, char **body, const char **content_type);
 static void pgstar_ui_cache_put(const char *key, const char *body, const char *content_type);
 
-static bool pgstar_ui_render_page(const char *page_name, char **body, const char **content_type);
+static bool pgstar_ui_render_page(const char *page_name, const char *title_override, char **body, const char **content_type);
 static bool pgstar_ui_fetch_asset(const char *kind, const char *name,
-								  char **body, const char **content_type);
+								  char **body, size_t *body_len, const char **content_type);
 
 /*
  * Public API: ensure pgstar.pages exists and seed built-in rows.
@@ -72,6 +73,8 @@ pgstar_ui_ensure_pages(void)
  *   /app/login.html   -> page_name 'login'
  *   /app/dashboard... -> page_name 'dashboard'
  */
+static void pgstar_build_title_from_path(const char *path, char *title_buf, size_t title_buf_size);
+
 void
 pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 {
@@ -80,7 +83,9 @@ pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 	const char *path = req->path;
 	char	   *body = NULL;
 	const char *content_type = NULL;
-	char		cache_key[192];
+	char		cache_key[256];
+	char		title_buf[256];
+	const char *title_override = NULL;
 
 	elog(pgstar_log_level, "pgstar: UI pages request: %s %s", req->method, req->path);
 
@@ -94,54 +99,23 @@ pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 	}
 
 	memset(page_name, 0, sizeof(page_name));
+	memset(title_buf, 0, sizeof(title_buf));
 
 	strlcpy(default_page_name, "dashboard", sizeof(default_page_name));
 
 	if (strcmp(path, "/app") == 0 || strcmp(path, "/app/") == 0)
 	{
 		strlcpy(page_name, default_page_name, sizeof(page_name));
+		title_override = "App Dashboard - PGSTAR App UI";
 	}
 	else if (strncmp(path, "/app/", 5) == 0)
 	{
-		const char *suffix = path + 5;
-		size_t		len;
-
-		if (*suffix == '\0')
-		{
-			strlcpy(page_name, default_page_name, sizeof(page_name));
-		}
-		else
-		{
-			const char *slash = strchr(suffix, '/');
-
-			/* Do not allow nested paths like /app/a/b */
-			if (slash != NULL)
-			{
-				resp->status_code = 404;
-				resp->status_text = "Not Found";
-				resp->content_type = "application/json";
-				resp->body = pstrdup("{\"error\":\"not found\"}\n");
-				return;
-			}
-
-			len = strlen(suffix);
-			if (len >= 5 && pg_strcasecmp(suffix + len - 5, ".html") == 0)
-			{
-				len -= 5;
-			}
-
-			if (len == 0 || len >= sizeof(page_name))
-			{
-				resp->status_code = 404;
-				resp->status_text = "Not Found";
-				resp->content_type = "application/json";
-				resp->body = pstrdup("{\"error\":\"not found\"}\n");
-				return;
-			}
-
-			memcpy(page_name, suffix, len);
-			page_name[len] = '\0';
-		}
+		/* All /app/* paths use the dashboard page */
+		strlcpy(page_name, default_page_name, sizeof(page_name));
+		
+		/* Build title from path segments */
+		pgstar_build_title_from_path(path, title_buf, sizeof(title_buf));
+		title_override = title_buf;
 	}
 	else
 	{
@@ -152,7 +126,11 @@ pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 		return;
 	}
 
-	snprintf(cache_key, sizeof(cache_key), "page:%s", page_name);
+	/* Include title override in cache key to avoid collisions */
+	if (title_override)
+		snprintf(cache_key, sizeof(cache_key), "page:%s:title:%s", page_name, title_override);
+	else
+		snprintf(cache_key, sizeof(cache_key), "page:%s", page_name);
 
 	if (pgstar_ui_cache_get(cache_key, &body, &content_type))
 	{
@@ -172,7 +150,7 @@ pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 
 	elog(pgstar_log_level, "pgstar: UI cache MISS for page '%s' (key: %s), rendering from database", page_name, cache_key);
 
-	if (!pgstar_ui_render_page(page_name, &body, &content_type))
+	if (!pgstar_ui_render_page(page_name, title_override, &body, &content_type))
 	{
 		elog(pgstar_log_level, "pgstar: UI render_page returned false for '%s'", page_name);
 		resp->status_code = 404;
@@ -200,7 +178,7 @@ pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 		}
 
 		content_type_allocated = true; /* Assume allocated by pgstar_ui_render_page */
-		
+
 		if (content_type == NULL)
 		{
 			elog(WARNING, "pgstar: UI render_page returned NULL content_type for '%s'", page_name);
@@ -210,7 +188,7 @@ pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 
 		elog(pgstar_log_level, "pgstar: UI cache PUT for page '%s' (key: %s), body_len=%zu, content_type='%s'", 
 			 page_name, cache_key, body ? strlen(body) : 0, content_type ? content_type : "(null)");
-		
+
 		body_cache = pstrdup(body); // this copy is for the cache and freed later.
 		// elog(pgstar_log_level, "pgstar: UI cache PUT: body_copy created at %p", (void *)body_cache);
 
@@ -281,30 +259,56 @@ pgstar_route_ui_js(const PgstarRequest *req, PgstarResponse *resp)
 
 	snprintf(cache_key, sizeof(cache_key), "js:%s", name);
 
+	size_t body_len = 0;
 	if (pgstar_ui_cache_get(cache_key, &body, &content_type))
 	{
 		resp->status_code = 200;
 		resp->status_text = "OK";
 		resp->content_type = content_type;
 		resp->body = body;
+		resp->body_len = 0; /* Cache doesn't store binary len, will use strlen */
 		return;
 	}
 
-	if (!pgstar_ui_fetch_asset("js", name, &body, &content_type))
+	if (!pgstar_ui_fetch_asset("js", name, &body, &body_len, &content_type))
 	{
 		resp->status_code = 404;
 		resp->status_text = "Not Found";
 		resp->content_type = "application/json";
 		resp->body = pstrdup("{\"error\":\"asset not found\"}\n");
+		resp->body_len = 0;
 		return;
 	}
 
-	pgstar_ui_cache_put(cache_key, body, content_type);
+	/* CRITICAL: Copy body and content_type from transaction context to longer-lived context
+	 * before storing in cache. The transaction context is cleaned up after SPI_finish(),
+	 * so pointers from pgstar_ui_fetch_asset() become invalid. */
+	char *body_cache;
+	char *body_resp;
+	if (body_len > 0)
+	{
+		/* Binary data - copy with known length */
+		body_cache = (char *) palloc(body_len);
+		memcpy(body_cache, body, body_len);
+		body_resp = (char *) palloc(body_len);
+		memcpy(body_resp, body, body_len);
+	}
+	else
+	{
+		/* Text data - use pstrdup (null-terminated) */
+		body_cache = pstrdup(body);
+		body_resp = pstrdup(body);
+	}
+	char *content_type_cache = pstrdup(content_type);
+	char *content_type_resp = pstrdup(content_type);
+	
+	pgstar_ui_cache_put(cache_key, body_cache, content_type_cache);
 
 	resp->status_code = 200;
 	resp->status_text = "OK";
-	resp->content_type = content_type;
-	resp->body = body;
+	resp->content_type = content_type_resp;
+	resp->body = body_resp;
+	resp->body_len = body_len;
 }
 
 /*
@@ -350,30 +354,56 @@ pgstar_route_ui_css(const PgstarRequest *req, PgstarResponse *resp)
 
 	snprintf(cache_key, sizeof(cache_key), "css:%s", name);
 
+	size_t body_len = 0;
 	if (pgstar_ui_cache_get(cache_key, &body, &content_type))
 	{
 		resp->status_code = 200;
 		resp->status_text = "OK";
 		resp->content_type = content_type;
 		resp->body = body;
+		resp->body_len = 0; /* Cache doesn't store binary len, will use strlen */
 		return;
 	}
 
-	if (!pgstar_ui_fetch_asset("css", name, &body, &content_type))
+	if (!pgstar_ui_fetch_asset("css", name, &body, &body_len, &content_type))
 	{
 		resp->status_code = 404;
 		resp->status_text = "Not Found";
 		resp->content_type = "application/json";
 		resp->body = pstrdup("{\"error\":\"asset not found\"}\n");
+		resp->body_len = 0;
 		return;
 	}
 
-	pgstar_ui_cache_put(cache_key, body, content_type);
+	/* CRITICAL: Copy body and content_type from transaction context to longer-lived context
+	 * before storing in cache. The transaction context is cleaned up after SPI_finish(),
+	 * so pointers from pgstar_ui_fetch_asset() become invalid. */
+	char *body_cache;
+	char *body_resp;
+	if (body_len > 0)
+	{
+		/* Binary data - copy with known length */
+		body_cache = (char *) palloc(body_len);
+		memcpy(body_cache, body, body_len);
+		body_resp = (char *) palloc(body_len);
+		memcpy(body_resp, body, body_len);
+	}
+	else
+	{
+		/* Text data - use pstrdup (null-terminated) */
+		body_cache = pstrdup(body);
+		body_resp = pstrdup(body);
+	}
+	char *content_type_cache = pstrdup(content_type);
+	char *content_type_resp = pstrdup(content_type);
+	
+	pgstar_ui_cache_put(cache_key, body_cache, content_type_cache);
 
 	resp->status_code = 200;
 	resp->status_text = "OK";
-	resp->content_type = content_type;
-	resp->body = body;
+	resp->content_type = content_type_resp;
+	resp->body = body_resp;
+	resp->body_len = body_len;
 }
 
 /* -------------------------------------------------------------------------
@@ -531,7 +561,7 @@ pgstar_ui_cache_put(const char *key, const char *body, const char *content_type)
  * -------------------------------------------------------------------------
  */
 static bool
-pgstar_ui_render_page(const char *page_name, char **body, const char **content_type)
+pgstar_ui_render_page(const char *page_name, const char *title_override, char **body, const char **content_type)
 {
 	StringInfoData buf;
 	int			ret;
@@ -605,6 +635,7 @@ pgstar_ui_render_page(const char *page_name, char **body, const char **content_t
 									  meta,
 									  js_names,
 									  css_names,
+									  title_override,
 									  &buf);
 
 			/* Copy buf.data before SPI_finish() and CommitTransactionCommand() 
@@ -637,14 +668,18 @@ pgstar_ui_render_page(const char *page_name, char **body, const char **content_t
 
 static bool
 pgstar_ui_fetch_asset(const char *kind, const char *name,
-					  char **body, const char **content_type)
+					  char **body, size_t *body_len, const char **content_type)
 {
 	StringInfoData buf;
 	int			ret;
 	bool		found = false;
-	char		page_name[256];
+	char		file_name[256];
+	MemoryContext oldcontext;
 
-	snprintf(page_name, sizeof(page_name), "%s/%s", kind, name);
+	snprintf(file_name, sizeof(file_name), "%s/%s", kind, name);
+
+	/* Save caller's memory context - we'll allocate return values in it */
+	oldcontext = CurrentMemoryContext;
 
 	SetCurrentStatementStartTimestamp();
 	StartTransactionCommand();
@@ -661,38 +696,80 @@ pgstar_ui_fetch_asset(const char *kind, const char *name,
 		Datum		values[1];
 
 		argtypes[0] = TEXTOID;
-		values[0] = CStringGetTextDatum(page_name);
+		values[0] = CStringGetTextDatum(file_name);
 
-		ret = SPI_execute_with_args(
-			"SELECT html, content_type "
-			"FROM pgstar.pages "
-			"WHERE page_name = $1 "
-			"ORDER BY is_custom DESC, page_id DESC "
-			"LIMIT 1",
-			1,
-			argtypes,
-			values,
-			NULL,
-			true,
-			1);
+		elog(pgstar_log_level, "pgstar: fetching asset '%s' (file_name='%s') from pgstar.files", name, file_name);
+
+		/* Construct query with inlined parameter to debug SPI parameter issues */
+		{
+			char *quoted_name = quote_literal_cstr(file_name);
+			StringInfoData query_buf;
+			initStringInfo(&query_buf);
+			appendStringInfo(&query_buf, 
+				"SELECT text_data, binary_data, is_binary, content_type "
+				"FROM pgstar.files "
+				"WHERE file_name = %s "
+				"ORDER BY is_custom DESC, file_id DESC "
+				"LIMIT 1",
+				quoted_name);
+			
+			elog(pgstar_log_level, "pgstar: executing query: %s", query_buf.data);
+			
+			ret = SPI_execute(query_buf.data, true, 1);
+			
+			pfree(quoted_name);
+			pfree(query_buf.data);
+		}
 
 		if (ret != SPI_OK_SELECT)
 			ereport(ERROR,
-					(errmsg("pgstar ui: SPI_execute_with_args failed: %d", ret)));
+					(errmsg("pgstar ui: SPI_execute failed: %d", ret)));
 
-		if (SPI_processed == 1)
+		if (SPI_processed == 0)
+		{
+			elog(pgstar_log_level, "pgstar: file '%s' not found in pgstar.files table", file_name);
+
+			/* DEBUG: List all files to see what's actually there (re-added for debugging) */
+			int debug_ret = SPI_execute("SELECT file_name FROM pgstar.files", true, 0);
+			if (debug_ret == SPI_OK_SELECT) {
+				StringInfoData debug_buf;
+				initStringInfo(&debug_buf);
+				appendStringInfo(&debug_buf, "DEBUG: Available files: ");
+				for (uint64 i = 0; i < SPI_processed; i++) {
+					HeapTuple t = SPI_tuptable->vals[i];
+					TupleDesc td = SPI_tuptable->tupdesc;
+					char *fn = SPI_getvalue(t, td, 1);
+					appendStringInfo(&debug_buf, "'%s', ", fn ? fn : "NULL");
+				}
+				elog(pgstar_log_level, "%s", debug_buf.data);
+				pfree(debug_buf.data);
+			}
+		}
+		else if (SPI_processed == 1)
 		{
 			HeapTuple	tup = SPI_tuptable->vals[0];
 			TupleDesc	tupdesc = SPI_tuptable->tupdesc;
-			char	   *content;
+			char	   *text_data;
+			bytea	   *binary_data = NULL;
+			bool		is_binary = false;
 			char	   *ct;
 			bool		ct_allocated = false;
+			bool		isnull;
 
-			content = SPI_getvalue(tup, tupdesc, 1);
-			ct = SPI_getvalue(tup, tupdesc, 2);
+			text_data = SPI_getvalue(tup, tupdesc, 1);
+			binary_data = (bytea *) SPI_getbinval(tup, tupdesc, 2, &isnull);
+			if (!isnull && binary_data != NULL)
+			{
+				Datum is_binary_datum = SPI_getbinval(tup, tupdesc, 3, &isnull);
+				is_binary = !isnull && DatumGetBool(is_binary_datum);
+			}
+			ct = SPI_getvalue(tup, tupdesc, 4);
 
-			if (content == NULL)
-				content = "";
+			/* Log if file exists but has no data */
+			if (text_data == NULL && (isnull || binary_data == NULL))
+			{
+				elog(pgstar_log_level, "pgstar: file '%s' found but has NULL text_data and binary_data", file_name);
+			}
 
 			if (ct == NULL)
 			{
@@ -703,14 +780,66 @@ pgstar_ui_fetch_asset(const char *kind, const char *name,
 				ct_allocated = true;
 			}
 
-			initStringInfo(&buf);
-			appendStringInfoString(&buf, content);
-
-			*body = pstrdup(buf.data);
-			*content_type = pstrdup(ct);
+			/* Extract data lengths and content while still in transaction context.
+			 * We must read from SPI pointers before switching contexts. */
+			size_t final_body_len = 0;
+			size_t source_len = 0;
+			char *temp_body = NULL;
+			char *temp_ct = NULL;
 			
-			/* Clean up temporary allocations */
-			pgstar_safe_pfree(buf.data);
+			if (is_binary && binary_data != NULL)
+			{
+				/* Extract binary data while still in transaction context */
+				source_len = VARSIZE(binary_data) - VARHDRSZ;
+				char *bin_data = VARDATA(binary_data);
+				temp_body = (char *) palloc(source_len);
+				memcpy(temp_body, bin_data, source_len);
+				final_body_len = source_len;
+			}
+			else if (text_data != NULL)
+			{
+				/* Extract text data while still in transaction context */
+				temp_body = pstrdup(text_data);
+				source_len = strlen(text_data);
+				final_body_len = 0; /* Will use strlen in response */
+			}
+			else
+			{
+				/* Empty file */
+				temp_body = pstrdup("");
+				source_len = 0;
+				final_body_len = 0;
+			}
+			
+			/* Copy content_type while still in transaction context */
+			temp_ct = pstrdup(ct);
+
+			/* Switch to caller's memory context before allocating return values
+			 * so they persist after the transaction ends */
+			MemoryContextSwitchTo(oldcontext);
+			
+			/* Allocate in caller's context, copying from temporary transaction context data */
+			if (final_body_len > 0)
+			{
+				/* Binary data */
+				*body = (char *) palloc(final_body_len);
+				memcpy(*body, temp_body, final_body_len);
+				*body_len = final_body_len;
+			}
+			else
+			{
+				/* Text data - use pstrdup for null-terminated string */
+				*body = pstrdup(temp_body);
+				*body_len = 0;
+			}
+			
+			*content_type = pstrdup(temp_ct);
+			
+			/* Note: temp_body and temp_ct are allocated in the transaction context
+			 * and will be automatically freed when SPI_finish() and 
+			 * CommitTransactionCommand() clean up the transaction context.
+			 * We've already copied their contents to the caller's context above. */
+			
 			/* Free ct only if we allocated it ourselves (when it was NULL).
 			 * If ct came from SPI_getvalue(), it will be freed by SPI_finish() 
 			 * which is called later in this function. */
@@ -722,6 +851,14 @@ pgstar_ui_fetch_asset(const char *kind, const char *name,
 	}
 	PG_CATCH();
 	{
+		ErrorData *edata = CopyErrorData();
+		
+		elog(pgstar_log_level, "pgstar: ui fetch asset query failed for '%s': %s", 
+			 file_name, edata ? edata->message : "unknown error");
+		
+		if (edata)
+			FreeErrorData(edata);
+
 		FlushErrorState();
 		SPI_finish();
 		PopActiveSnapshot();
@@ -735,6 +872,106 @@ pgstar_ui_fetch_asset(const char *kind, const char *name,
 	CommitTransactionCommand();
 
 	return found;
+}
+
+/*
+ * Build title from path segments.
+ * Examples:
+ *   /app/          -> "App Dashboard - PGSTAR App UI"
+ *   /app/tables    -> "Tables - PGSTAR App UI"
+ *   /app/tables/users -> "Tables / Users - PGSTAR App UI"
+ */
+static void
+pgstar_build_title_from_path(const char *path, char *title_buf, size_t title_buf_size)
+{
+	char		segs_buf[8][64];
+	int			nseg;
+	int			i;
+	int			pos = 0;
+	bool		first = true;
+
+	if (path == NULL || title_buf == NULL || title_buf_size == 0)
+	{
+		if (title_buf && title_buf_size > 0)
+			title_buf[0] = '\0';
+		return;
+	}
+
+	/* Split path into segments */
+	nseg = pgstar_split_path_segments(path, segs_buf, 8);
+
+	/* Skip the "app" segment (first segment) */
+	if (nseg > 0 && strcmp(segs_buf[0], "app") == 0)
+	{
+		/* Process remaining segments */
+		for (i = 1; i < nseg; i++)
+		{
+			const char *seg = segs_buf[i];
+			size_t		seg_len = strlen(seg);
+			char		capitalized[64];
+			int			j;
+
+			/* Skip empty segments */
+			if (seg_len == 0)
+				continue;
+
+			/* Remove .html suffix if present */
+			if (seg_len >= 5 && pg_strcasecmp(seg + seg_len - 5, ".html") == 0)
+				seg_len -= 5;
+
+			if (seg_len == 0)
+				continue;
+
+			/* Capitalize first letter */
+			memcpy(capitalized, seg, seg_len);
+			capitalized[seg_len] = '\0';
+			if (capitalized[0] >= 'a' && capitalized[0] <= 'z')
+				capitalized[0] = capitalized[0] - 'a' + 'A';
+
+			/* Add separator if not first segment */
+			if (!first)
+			{
+				if (pos + 3 < (int) title_buf_size)
+				{
+					memcpy(title_buf + pos, " / ", 3);
+					pos += 3;
+				}
+			}
+
+			/* Add segment */
+			if (pos + seg_len < (int) title_buf_size)
+			{
+				memcpy(title_buf + pos, capitalized, seg_len);
+				pos += seg_len;
+			}
+
+			first = false;
+		}
+	}
+
+	/* If no segments after "app", use "App Dashboard" */
+	if (first)
+	{
+		if (pos + 13 < (int) title_buf_size)
+		{
+			memcpy(title_buf + pos, "App Dashboard", 13);
+			pos += 13;
+		}
+	}
+
+	/* Append " - PGSTAR App UI" */
+	if (pos + 18 < (int) title_buf_size)
+	{
+		int n = snprintf(title_buf + pos, title_buf_size - pos, " - PGSTAR App UI");
+		if (n > 0)
+			pos += n;
+	}
+	
+	/* Ensure null termination */
+	if (pos < (int) title_buf_size)
+		title_buf[pos] = '\0';
+	else if (title_buf_size > 0)
+		title_buf[title_buf_size - 1] = '\0';
 }
 
 /* HTML helper functions have been moved to separate files:

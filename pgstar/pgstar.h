@@ -26,6 +26,8 @@ typedef struct PgstarRequest
 	char	path[256];		/* path without query/fragment */
 	char	query[256];		/* portion after '?' (no '#') */
 	char	hash[128];		/* fragment (after '#') */
+	const char *body;		/* request body (points into request buffer) */
+	size_t	body_len;		/* request body length */
 } PgstarRequest;
 
 typedef struct PgstarResponse
@@ -33,7 +35,8 @@ typedef struct PgstarResponse
 	int			status_code;
 	const char *status_text;
 	const char *content_type;
-	char	   *body;			/* palloc'd, may be NULL */
+	char	   *body;			/* palloc'd, may be NULL (text data) */
+	size_t		body_len;		/* body length (for binary data, use this instead of strlen) */
 	char	   *log;			/* optional X-Log header value */
 } PgstarResponse;
 
@@ -57,6 +60,11 @@ void pgstar_http_send_html_file(int client_fd, const char *filepath);
 /* Router */
 void pgstar_route_request(const PgstarRequest *req, PgstarResponse *resp);
 void pgstar_route_api(const PgstarRequest *req, PgstarResponse *resp);
+void pgstar_route_v1(const PgstarRequest *req, PgstarResponse *resp);
+void pgstar_route_v1_chat(const PgstarRequest *req, PgstarResponse *resp);
+void pgstar_route_v1_ui_models(const PgstarRequest *req, PgstarResponse *resp);
+void pgstar_route_v1_models_convert(const PgstarRequest *req, PgstarResponse *resp);
+void pgstar_route_v1_models_local(const PgstarRequest *req, PgstarResponse *resp);
 void pgstar_route_ai(const PgstarRequest *req, PgstarResponse *resp);
 void pgstar_route_static(const PgstarRequest *req, PgstarResponse *resp);
 void pgstar_route_pgstar(const PgstarRequest *req, PgstarResponse *resp);

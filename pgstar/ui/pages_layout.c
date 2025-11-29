@@ -18,14 +18,15 @@ pgstar_ui_build_html_page(const char *page_name,
 						  Jsonb *meta,
 						  const char *js_names,
 						  const char *css_names,
+						  const char *title_override,
 						  StringInfo buf)
 {
 	bool		use_main = (parent_tag && strcmp(parent_tag, "main") == 0);
+	const char *title = title_override ? title_override : (page_name ? page_name : "pgstar");
 
 	appendStringInfoString(buf, "<!doctype html>\n<html lang=\"en\">\n<head>\n");
 	appendStringInfoString(buf, "  <meta charset=\"utf-8\">\n");
-	appendStringInfo(buf, "  <title>%s</title>\n",
-					 page_name ? page_name : "pgstar");
+	appendStringInfo(buf, "  <title>%s</title>\n", title);
 
 	if (meta != NULL)
 		pgstar_ui_append_meta_tags(buf, meta);

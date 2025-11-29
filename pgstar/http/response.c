@@ -16,7 +16,8 @@ void
 pgstar_http_send_response(int client_fd, PgstarResponse *resp)
 {
     char    header[512];
-    size_t  body_len = resp->body ? strlen(resp->body) : 0;
+    size_t  body_len = resp->body_len > 0 ? resp->body_len : 
+                       (resp->body ? strlen(resp->body) : 0);
     struct iovec iov[2];
     int     iovcnt;
     ssize_t written;

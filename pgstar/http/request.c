@@ -19,6 +19,7 @@ pgstar_parse_http_request(const char *buf, ssize_t len, PgstarRequest *req)
 	if (buf == NULL || len <= 0 || req == NULL)
 		return false;
 
+	/* Note: body extraction is done in pgstar_http_request_handle */
 	memset(req, 0, sizeof(*req));
 
 	line_end = strstr(buf, "\r\n");
@@ -59,8 +60,11 @@ pgstar_http_request_handle(int client_fd, const char *peek_buf, ssize_t peek_len
 	/* Pre-allocate enough space for typical GET headers (~8KB) */
 	enlargeStringInfo(&request, 8192);
 
-	if (peek_buf && peek_len > 0)
-		appendBinaryStringInfo(&request, peek_buf, peek_len);
+	/* 
+	 * Note: We do NOT append peek_buf here because it was read with MSG_PEEK,
+	 * meaning the data is still in the socket buffer. The recv() loop below
+	 * will read it again. Appending it here would duplicate the data.
+	 */
 
 	for (;;)
 	{
@@ -122,6 +126,7 @@ pgstar_http_request_handle(int client_fd, const char *peek_buf, ssize_t peek_len
 		 (int) Min(request.len, 120), request.data);
 
 	memset(&resp, 0, sizeof(resp));
+	memset(&req, 0, sizeof(req));
 
 	if (!pgstar_parse_http_request(request.data, request.len, &req))
 	{
@@ -132,6 +137,18 @@ pgstar_http_request_handle(int client_fd, const char *peek_buf, ssize_t peek_len
 	}
 	else
 	{
+		/* Extract request body */
+		if (header_done && content_length > 0 && request.len >= header_bytes + content_length)
+		{
+			req.body = request.data + header_bytes;
+			req.body_len = content_length;
+		}
+		else
+		{
+			req.body = NULL;
+			req.body_len = 0;
+		}
+		
 		pgstar_route_request(&req, &resp);
 		if (resp.status_code == 0)
 		{

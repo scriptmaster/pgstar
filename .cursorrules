@@ -1,0 +1,20 @@
+# pgstar Extension Development Rules
+
+You are an expert PostgreSQL extension developer working on `pgstar`.
+
+## 1. Code Standards
+- **Memory Safety**: ALWAYS Deep Copy SPI results to caller's memory context before committing transaction. See `CONTEXT.md`.
+- **Concurrency**: ALWAYS put `CHECK_FOR_INTERRUPTS()` in any `for(;;)` or `while` loop in background workers.
+- **SQL Execution**: Prefer inlining literals (`quote_literal_cstr`) for simple lookups to avoid SPI parameter bugs.
+- **Logging**: Use `elog(pgstar_log_level, ...)` for info/debug logs.
+
+## 2. Project Architecture
+- **Frontend**: Vue.js. Assets stored in `pgstar.files` (supports text & binary).
+- **Backend**: C extension. Custom HTTP stack.
+- **Context**: Read `CONTEXT.md` for full architectural details and history.
+
+## 3. Workflow
+- **Build**: Always run `make extension-install` to build and install changes.
+- **Restart**: `pgstar_worker` restarts automatically on crash/reload, or use `make restart` if needed.
+
+

@@ -1,4 +1,5 @@
 #include "postgres.h"
+#include "miscadmin.h"
 
 #include "tcp/protocol.h"
 
@@ -27,6 +28,9 @@ pgstar_tcp_protocol_route(int client_fd)
 
 	for (;;)
 	{
+		/* Ensure we process signals/interrupts during long-lived connections */
+		CHECK_FOR_INTERRUPTS();
+
 		if (!pgstar_tcp_protocol_wait_for_data(client_fd))
 		{
 			close(client_fd);

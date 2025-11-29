@@ -12,6 +12,7 @@ void pgstar_ui_build_html_page(const char *page_name,
 							  Jsonb *meta,
 							  const char *js_names,
 							  const char *css_names,
+							  const char *title_override,
 							  StringInfo buf);
 
 void pgstar_ui_append_meta_tags(StringInfo head, Jsonb *meta);

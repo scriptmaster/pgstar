@@ -19,11 +19,11 @@ pgstar_ui_append_js_scripts(StringInfo body, const char *js_names)
 
 	if (js_names == NULL || js_names[0] == '\0')
 	{
-		/* Default datastar CDN script when none specified */
+		/* Default Vue.js when none specified */
 		appendStringInfoString(body,
-							 "  <script type=\"module\" src=\"https://cdn.jsdelivr.net/gh/starfederation/datastar@1.0.0-RC.6/bundles/datastar.js\"></script>\n");
+							 "  <script src=\"https://cdnjs.cloudflare.com/ajax/libs/vue/3.5.22/vue.global.prod.min.js\"></script>\n");
 		appendStringInfoString(body,
-							 "  <script master src=\"https://emeraldcss-deno.scriptmaster.deno.net/emerald-star.js\"></script>\n");
+							 "  <script src=\"/static/js/vue-data-table.js\"></script>\n");
 		return;
 	}
 
@@ -42,7 +42,7 @@ pgstar_ui_append_js_scripts(StringInfo body, const char *js_names)
 			continue;
 
 		/* Check if token contains "module" keyword */
-		type_attr = (strstr(token, "module") != NULL) ? "type=\"module\"" : "master";
+		type_attr = (strstr(token, "module") != NULL) ? "type=\"module\"" : "";
 
 		/* Determine prefix: empty for full URLs, /static/js/ for relative paths */
 		prefix = "";
