@@ -34,6 +34,12 @@ pgstar_route_request(const PgstarRequest *req, PgstarResponse *resp)
 		return;
 	}
 	else
+	if (strcmp(req->path, "/favicon.ico") == 0)
+	{
+		pgstar_route_ui_favicon(req, resp);
+		return;
+	}
+	else
 	/* /app/ paths are handled by the UI pages router */
 	if (strncmp(req->path, "/app/", 5) == 0 ||
 		strcmp(req->path, "/app") == 0)

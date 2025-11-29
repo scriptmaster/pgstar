@@ -17,6 +17,7 @@ void pgstar_define_gucs(void);
 /* SPI helpers */
 char *pgstar_json_schemata(void);
 char *pgstar_json_tables(void);
+char *pgstar_json_files(void);
 
 /* HTTP request/response representations */
 typedef struct PgstarRequest
@@ -74,7 +75,12 @@ void pgstar_route_ui_css(const PgstarRequest *req, PgstarResponse *resp);
 
 /* UI setup */
 void pgstar_ui_ensure_pages(void);
+bool pgstar_ui_fetch_file(const char *file_name, char **body, size_t *body_len, const char **content_type);
+void pgstar_route_ui_favicon(const PgstarRequest *req, PgstarResponse *resp);
 extern const char *pgstar_root_html;
+
+/* HTTP Client */
+char *pgstar_http_download(const char *url, size_t *len, char **content_type);
 
 /* Safe memory utilities */
 void pgstar_safe_pfree(void *ptr);

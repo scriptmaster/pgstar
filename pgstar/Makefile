@@ -36,6 +36,9 @@ else
     endif
 endif
 
+# OpenSSL support for HTTPS downloads
+SHLIB_LINK += -lssl -lcrypto
+
 UI_DIR := ui
 UI_ROOT_HTML := $(UI_DIR)/root.html
 UI_ROOT_C := $(UI_DIR)/root_page.c

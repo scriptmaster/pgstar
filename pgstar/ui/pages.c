@@ -33,7 +33,7 @@ static bool pgstar_ui_cache_get(const char *key, char **body, const char **conte
 static void pgstar_ui_cache_put(const char *key, const char *body, const char *content_type);
 
 static bool pgstar_ui_render_page(const char *page_name, const char *title_override, char **body, const char **content_type);
-static bool pgstar_ui_fetch_asset(const char *kind, const char *name,
+bool pgstar_ui_fetch_file(const char *file_name,
 								  char **body, size_t *body_len, const char **content_type);
 
 /*
@@ -270,7 +270,10 @@ pgstar_route_ui_js(const PgstarRequest *req, PgstarResponse *resp)
 		return;
 	}
 
-	if (!pgstar_ui_fetch_asset("js", name, &body, &body_len, &content_type))
+	char file_path[256];
+	snprintf(file_path, sizeof(file_path), "js/%s", name);
+
+	if (!pgstar_ui_fetch_file(file_path, &body, &body_len, &content_type))
 	{
 		resp->status_code = 404;
 		resp->status_text = "Not Found";
@@ -282,7 +285,7 @@ pgstar_route_ui_js(const PgstarRequest *req, PgstarResponse *resp)
 
 	/* CRITICAL: Copy body and content_type from transaction context to longer-lived context
 	 * before storing in cache. The transaction context is cleaned up after SPI_finish(),
-	 * so pointers from pgstar_ui_fetch_asset() become invalid. */
+	 * so pointers from pgstar_ui_fetch_file() become invalid. */
 	char *body_cache;
 	char *body_resp;
 	if (body_len > 0)
@@ -365,7 +368,10 @@ pgstar_route_ui_css(const PgstarRequest *req, PgstarResponse *resp)
 		return;
 	}
 
-	if (!pgstar_ui_fetch_asset("css", name, &body, &body_len, &content_type))
+	char file_path[256];
+	snprintf(file_path, sizeof(file_path), "css/%s", name);
+
+	if (!pgstar_ui_fetch_file(file_path, &body, &body_len, &content_type))
 	{
 		resp->status_code = 404;
 		resp->status_text = "Not Found";
@@ -377,7 +383,7 @@ pgstar_route_ui_css(const PgstarRequest *req, PgstarResponse *resp)
 
 	/* CRITICAL: Copy body and content_type from transaction context to longer-lived context
 	 * before storing in cache. The transaction context is cleaned up after SPI_finish(),
-	 * so pointers from pgstar_ui_fetch_asset() become invalid. */
+	 * so pointers from pgstar_ui_fetch_file() become invalid. */
 	char *body_cache;
 	char *body_resp;
 	if (body_len > 0)
@@ -666,17 +672,14 @@ pgstar_ui_render_page(const char *page_name, const char *title_override, char **
 	return found;
 }
 
-static bool
-pgstar_ui_fetch_asset(const char *kind, const char *name,
+bool
+pgstar_ui_fetch_file(const char *file_name,
 					  char **body, size_t *body_len, const char **content_type)
 {
 	StringInfoData buf;
 	int			ret;
 	bool		found = false;
-	char		file_name[256];
 	MemoryContext oldcontext;
-
-	snprintf(file_name, sizeof(file_name), "%s/%s", kind, name);
 
 	/* Save caller's memory context - we'll allocate return values in it */
 	oldcontext = CurrentMemoryContext;
@@ -698,7 +701,7 @@ pgstar_ui_fetch_asset(const char *kind, const char *name,
 		argtypes[0] = TEXTOID;
 		values[0] = CStringGetTextDatum(file_name);
 
-		elog(pgstar_log_level, "pgstar: fetching asset '%s' (file_name='%s') from pgstar.files", name, file_name);
+		elog(pgstar_log_level, "pgstar: fetching asset (file_name='%s') from pgstar.files", file_name);
 
 		/* Construct query with inlined parameter to debug SPI parameter issues */
 		{
@@ -706,7 +709,7 @@ pgstar_ui_fetch_asset(const char *kind, const char *name,
 			StringInfoData query_buf;
 			initStringInfo(&query_buf);
 			appendStringInfo(&query_buf, 
-				"SELECT text_data, binary_data, is_binary, content_type "
+				"SELECT text_data, binary_data, is_binary, content_type, is_download "
 				"FROM pgstar.files "
 				"WHERE file_name = %s "
 				"ORDER BY is_custom DESC, file_id DESC "
@@ -755,15 +758,161 @@ pgstar_ui_fetch_asset(const char *kind, const char *name,
 			char	   *ct;
 			bool		ct_allocated = false;
 			bool		isnull;
+			bool		is_download = false;
 
 			text_data = SPI_getvalue(tup, tupdesc, 1);
-			binary_data = (bytea *) SPI_getbinval(tup, tupdesc, 2, &isnull);
+			
+			/* Correctly handle binary data (bytea) which might be TOASTed */
+			Datum binary_datum = SPI_getbinval(tup, tupdesc, 2, &isnull);
+			if (!isnull)
+			{
+				/* Detoast if necessary. DatumGetByteaP ensures we get a flat, non-compressed varlena. */
+				binary_data = DatumGetByteaP(binary_datum);
+			}
+			else
+			{
+				binary_data = NULL;
+			}
+
 			if (!isnull && binary_data != NULL)
 			{
 				Datum is_binary_datum = SPI_getbinval(tup, tupdesc, 3, &isnull);
 				is_binary = !isnull && DatumGetBool(is_binary_datum);
 			}
 			ct = SPI_getvalue(tup, tupdesc, 4);
+			
+			Datum is_download_datum = SPI_getbinval(tup, tupdesc, 5, &isnull);
+			if (!isnull)
+				is_download = DatumGetBool(is_download_datum);
+
+			/* Handle download if requested and text_data is a URL */
+			if (is_download && text_data != NULL && (strncmp(text_data, "http://", 7) == 0 || strncmp(text_data, "https://", 8) == 0))
+			{
+				size_t downloaded_len = 0;
+				char *downloaded_ct = NULL;
+				char *downloaded_body = pgstar_http_download(text_data, &downloaded_len, &downloaded_ct);
+
+				if (downloaded_body != NULL)
+				{
+					elog(pgstar_log_level, "pgstar: successfully downloaded '%s' (%zu bytes)", text_data, downloaded_len);
+					
+					/* Update database with downloaded content */
+					/* We need to update the same row we just found. 
+					 * Since we don't have the ID handy (didn't select it), we'll update by file_name.
+					 * We are in a transaction. */
+					 
+					/* Use hex encoding for binary data insertion to be safe */
+					/* Actually, SPI_execute_with_args is better for binary, but we want to stick to inlined/simple for now if possible?
+					 * No, for binary update, parameter binding is much safer and easier than hex escaping.
+					 * We already use SPI. Let's use SPI_execute_with_args for the UPDATE.
+					 */
+					
+					/* Prepare update query */
+					char *quoted_fn = quote_literal_cstr(file_name);
+					StringInfoData update_buf;
+					initStringInfo(&update_buf);
+					
+					/* Update columns: binary_data, text_data=NULL, is_binary=TRUE, is_download=FALSE, content_type */
+					/* Note: We use BYTEA for the content. */
+					
+					/* We need to use parameters for bytea to avoid escaping hell */
+					Oid argtypes_upd[3];
+					Datum values_upd[3];
+					char nulls_upd[3] = {' ', ' ', ' '};
+					
+					argtypes_upd[0] = BYTEAOID;
+					// values_upd[0] set below
+					
+					argtypes_upd[1] = TEXTOID;
+					// values_upd[1] set below
+					
+					argtypes_upd[2] = TEXTOID; /* file_name */
+					values_upd[2] = CStringGetTextDatum(file_name);
+					
+					/* Create bytea datum */
+					/* We must use `byteain()` or direct structure creation, but SPI parameters work best with direct pointer */
+					/* However, `PointerGetDatum` might be unsafe if we just cast a char* to bytea*. 
+					   The bytea struct has a 4-byte header for size (varlena). */
+					
+					bytea *bdata = (bytea *) palloc(downloaded_len + VARHDRSZ);
+					SET_VARSIZE(bdata, downloaded_len + VARHDRSZ);
+					memcpy(VARDATA(bdata), downloaded_body, downloaded_len);
+					values_upd[0] = PointerGetDatum(bdata);
+					
+					if (downloaded_ct)
+						values_upd[1] = CStringGetTextDatum(downloaded_ct);
+					else
+						values_upd[1] = CStringGetTextDatum(ct ? ct : "application/octet-stream");
+
+					int upd_ret = SPI_execute_with_args(
+						"UPDATE pgstar.files SET "
+						"binary_data = $1, "
+						"text_data = NULL, "
+						"is_binary = TRUE, "
+						"is_download = FALSE, "
+						"content_type = $2, "
+						"updated_at = now() "
+						"WHERE file_name = $3",
+						3, argtypes_upd, values_upd, nulls_upd,
+						false, 0);
+						
+					if (upd_ret == SPI_OK_UPDATE) {
+						elog(pgstar_log_level, "pgstar: updated pgstar.files with downloaded content");
+					} else {
+						elog(WARNING, "pgstar: failed to update pgstar.files after download: %d", upd_ret);
+					}
+					
+					/* Use the downloaded data for response */
+					/* Free old pointers if needed (they are from SPI, so no manual free) */
+					
+					/* Set new values for response construction */
+					is_binary = true;
+					/* CRITICAL FIX: The `bdata` we created above has a VARHDRSZ (4-byte length header).
+					 * If we assign `binary_data = bdata;` directly, later code expects `binary_data` to be a Postgres `bytea*`
+					 * from which it extracts data using `VARDATA()` and `VARSIZE()`.
+					 * 
+					 * However, `pgstar_ui_fetch_file` logic below (lines ~890+) does:
+					 *   if (is_binary && binary_data != NULL) {
+					 *      source_len = VARSIZE(binary_data) - VARHDRSZ;
+					 *      bin_data = VARDATA(binary_data);
+					 *      ...
+					 *   }
+					 * 
+					 * So `bdata` (which IS a valid bytea struct with header) IS CORRECT for `binary_data`.
+					 * 
+					 * BUT! If we are seeing "broken binary data", maybe the download itself included extra headers
+					 * or the offset is wrong?
+					 * 
+					 * Wait, `downloaded_body` from `pgstar_http_download` is a pure raw buffer (char*).
+					 * We wrapped it into a `bytea` struct in `bdata`.
+					 * 
+					 * Let's verify if `bdata` persists correctly in the current memory context?
+					 * We are inside `SPI_connect()` block. `palloc` allocates in the current SPI context.
+					 * `bdata` is passed to SPI_execute_with_args.
+					 * Then we assign `binary_data = bdata`.
+					 * Then we proceed to use `binary_data`.
+					 * 
+					 * Logic looks sound for a fresh download.
+					 * 
+					 * WHAT IF: The "broken" data is because we are mixing up contexts or the `downloaded_body`
+					 * wasn't pure binary? (e.g. transfer-encoding chunked?)
+					 * The simple HTTP client in client.c DOES NOT handle Transfer-Encoding: chunked.
+					 * If the server sends chunked response, we'll see raw chunks with hex sizes in the binary.
+					 * 
+					 * `emeraldai.cloud` might be behind Nginx/Cloudflare which often uses chunked encoding.
+					 */
+					binary_data = bdata; /* This is palloc'd in current context */
+					text_data = NULL;
+					if (downloaded_ct) ct = downloaded_ct;
+					
+					/* Note: We don't free downloaded_body yet, we copied it to bdata */
+					pfree(downloaded_body);
+				}
+				else
+				{
+					elog(WARNING, "pgstar: failed to download '%s'", text_data);
+				}
+			}
 
 			/* Log if file exists but has no data */
 			if (text_data == NULL && (isnull || binary_data == NULL))
@@ -773,10 +922,13 @@ pgstar_ui_fetch_asset(const char *kind, const char *name,
 
 			if (ct == NULL)
 			{
-				if (strcmp(kind, "js") == 0)
+				size_t fn_len = strlen(file_name);
+				if (fn_len > 3 && strcmp(file_name + fn_len - 3, ".js") == 0)
 					ct = pstrdup("application/javascript");
-				else
+				else if (fn_len > 4 && strcmp(file_name + fn_len - 4, ".css") == 0)
 					ct = pstrdup("text/css; charset=utf-8");
+				else
+					ct = pstrdup("application/octet-stream");
 				ct_allocated = true;
 			}
 
@@ -982,3 +1134,88 @@ pgstar_build_title_from_path(const char *path, char *title_buf, size_t title_buf
  */
 
 
+
+/*
+ * Route: /favicon.ico
+ * Uses pgstar.files row with file_name 'favicon.ico'.
+ */
+void
+pgstar_route_ui_favicon(const PgstarRequest *req, PgstarResponse *resp)
+{
+	const char *path = req->path;
+	char		cache_key[64];
+	char	   *body = NULL;
+	const char *content_type = NULL;
+
+	if (pg_strcasecmp(req->method, "GET") != 0)
+	{
+		resp->status_code = 405;
+		resp->status_text = "Method Not Allowed";
+		resp->content_type = "application/json";
+		resp->body = pstrdup("{\"error\":\"method not allowed\"}\n");
+		return;
+	}
+
+	if (strcmp(path, "/favicon.ico") != 0)
+	{
+		resp->status_code = 404;
+		resp->status_text = "Not Found";
+		resp->content_type = "application/json";
+		resp->body = pstrdup("{\"error\":\"not found\"}\n");
+		return;
+	}
+
+	/* Use specific cache key for favicon */
+	snprintf(cache_key, sizeof(cache_key), "favicon.ico");
+
+	size_t body_len = 0;
+	/* NOTE: Cache currently treats body as string. Binary data with NULLs will be truncated.
+	 * Since favicon.ico is binary, we skip cache for now until cache supports binary length.
+	 */
+	/*
+	if (pgstar_ui_cache_get(cache_key, &body, &content_type))
+	{
+		resp->status_code = 200;
+		resp->status_text = "OK";
+		resp->content_type = content_type;
+		resp->body = body;
+		resp->body_len = 0; 
+		return;
+	}
+	*/
+
+	if (!pgstar_ui_fetch_file("favicon.ico", &body, &body_len, &content_type))
+	{
+		resp->status_code = 404;
+		resp->status_text = "Not Found";
+		resp->content_type = "application/json";
+		resp->body = pstrdup("{\"error\":\"favicon not found\"}\n");
+		resp->body_len = 0;
+		return;
+	}
+
+	resp->status_code = 200;
+	resp->status_text = "OK";
+	/* Ensure content type is set */
+	resp->content_type = content_type ? pstrdup(content_type) : pstrdup("image/x-icon");
+	
+	/* Copy body to response. 
+	 * Body from fetch_file is already in current context (copied out of tx),
+	 * but we should own our copy if we were caching.
+	 * Since we are not caching, we can just take ownership or copy.
+	 * To be safe and consistent with other routes that might eventually cache:
+	 */
+	if (body_len > 0)
+	{
+		resp->body = (char *) palloc(body_len);
+		memcpy(resp->body, body, body_len);
+		resp->body_len = body_len;
+	}
+	else
+	{
+		resp->body = pstrdup(body);
+		resp->body_len = 0;
+	}
+	
+	/* If we were caching, we would put it here. skipped for binary safety. */
+}

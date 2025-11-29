@@ -24,6 +24,10 @@ SELECT pgstar_version();
 --   '{"Content-Type": "application/json"}'::jsonb
 -- );
 
-select page_name, parent_tag from pgstar.pages WHERE page_name='dashboard';
--- select * from pgstar.jobs;
--- DELETE FROM pgstar.pages;
+-- select page_name, parent_tag from pgstar.pages WHERE page_name='dashboard';
+
+select * from pgstar.jobs;
+select * from pgstar.pages;
+select * from pgstar.files;
+
+-- DELETE FROM pgstar.pages; ˀx  

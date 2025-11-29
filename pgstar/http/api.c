@@ -54,6 +54,31 @@ pgstar_route_api(const PgstarRequest *req, PgstarResponse *resp)
 		return;
 	}
 
+	/* /api/files endpoint */
+	if (nseg == 2 && strcmp(segs[1], "files") == 0)
+	{
+		char *json = NULL;
+		PG_TRY();
+		{
+			json = pgstar_json_files();
+			resp->status_code = 200;
+			resp->status_text = "OK";
+			resp->content_type = "application/json";
+			resp->body = json;
+		}
+		PG_CATCH();
+		{
+			FlushErrorState();
+			if (json) pfree(json);
+			resp->status_code = 500;
+			resp->status_text = "Internal Server Error";
+			resp->content_type = "application/json";
+			resp->body = pstrdup("{\"error\":\"files query failed\"}\n");
+		}
+		PG_END_TRY();
+		return;
+	}
+
 	/* Generic handler: /api/:schema/:table */
 	pgstar_api_generic_table(req, nseg, segs, resp);
 }
