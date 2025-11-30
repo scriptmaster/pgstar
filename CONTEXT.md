@@ -18,16 +18,45 @@
 PostgreSQL uses a hierarchical memory context system.
 - **SPI Contexts**: Data returned by `SPI_execute` (e.g., via `SPI_getvalue`, `SPI_getbinval`, or `StringInfo` buffers built inside a Tx) resides in a short-lived transaction context.
 - **The Rule**: NEVER return pointers from SPI directly. ALWAYS deep copy them to the caller's memory context *before* the transaction ends.
+
+#### SPI_getvalue() and pstrdup() Usage (STRICT RULES)
+- **CRITICAL**: `SPI_getvalue()` returns pointers that are **ONLY valid until `SPI_finish()` is called**. These pointers become invalid immediately after the transaction context is torn down.
+- **MANDATORY Pattern**: When using `SPI_getvalue()` results:
+  1. **ALWAYS** copy the result immediately with `pstrdup()` before using it:
+     ```c
+     char *raw_value = SPI_getvalue(tup, tupdesc, colnum);
+     char *value = raw_value ? pstrdup(raw_value) : NULL;
+     ```
+  2. **NEVER** use `SPI_getvalue()` pointers directly in:
+     - `appendStringInfo()` format strings (even though it copies, the pointer may be invalidated)
+     - `escape_json()` calls
+     - Any function that might outlive the current loop iteration
+     - String comparisons or operations that dereference the pointer
+  3. **ALWAYS** free your `pstrdup()` copies after use (they're allocated in the transaction context):
+     ```c
+     if (value) pfree(value);
+     ```
+  4. **Exception**: If you're building a `StringInfo` buffer and copying `buf.data` to the caller's context BEFORE `SPI_finish()`, you can use `SPI_getvalue()` pointers directly ONLY if:
+     - You use them immediately in `appendStringInfo()` calls (which copy the content)
+     - You copy `buf.data` with `pstrdup()` to the caller's context
+     - You do this BEFORE `SPI_finish()` is called
+     - **However, the SAFEST pattern is still to `pstrdup()` first** to avoid any potential issues
+  5. **NULL Safety**: Always check for NULL before dereferencing:
+     ```c
+     char *value = raw_value ? pstrdup(raw_value) : NULL;
+     if (value && value[0] == 't') { ... }  // Safe: checks NULL first
+     ```
+
 - **The Protocol**:
-  1. Save caller's context: `MemoryContext old = CurrentMemoryContext;`
+  1. Save caller's context: `MemoryContext caller_ctx = CurrentMemoryContext;`
   2. Start Tx: `StartTransactionCommand();`
   3. Query & Get Data.
   4. **Deep Copy** data out: 
-     - Strings: `pstrdup` 
+     - Strings: `pstrdup()` **immediately after `SPI_getvalue()`**
      - Binary: `palloc` + `memcpy`
      - Varlen Datums (text/varchar/bytea): use `PG_DETOAST_DATUM_COPY(datum)` so SPI can safely continue without invalidating your pointer.
      - **Do this before** `SPI_finish()` or `CommitTransactionCommand()`.
-     - When returning `StringInfo` buffers to higher layers (HTTP/JSON helpers), explicitly `MemoryContextSwitchTo(old)` before copying so the final response lives in the caller's context.
+     - When returning `StringInfo` buffers to higher layers (HTTP/JSON helpers), explicitly `MemoryContextSwitchTo(caller_ctx)` before copying so the final response lives in the caller's context.
   5. Commit: `CommitTransactionCommand()` (or `AbortCurrentTransaction()` on error).
 
 ### 2. Binary Data Handling (CRITICAL)
@@ -63,6 +92,7 @@ PostgreSQL uses a hierarchical memory context system.
 ## Recent Issues & Fixes
 - **JSON API returning Integers**: Caused by returning `buf.data` (from `StringInfo`) which was allocated in the transaction context. Fixed by `pstrdup`ing the result before `SPI_finish`.
 - **HTTP JSON responses crashing worker**: `pgstar_json_files()` returned `buf.data` from the SPI context; after `SPI_finish()` the pointer was freed, leading to segfaults under load. Fix: switch to the caller's memory context and copy the JSON string before finishing SPI.
+- **Segfault in `/api/files` endpoint (2025-11-30)**: Critical bug where `SPI_getvalue()` pointers were used directly in `appendStringInfo()` and `escape_json()` calls. Even though `appendStringInfo()` copies content, the pointers themselves could be invalidated. **Fix**: Copy all `SPI_getvalue()` results immediately with `pstrdup()` before any use, use the copies, then free them. This ensures memory safety even if the transaction context changes unexpectedly.
 - **Intermittent Crashes on Download**: Caused by `CommitTransactionCommand()` in `PG_CATCH` block (illegal state). Fixed by using `AbortCurrentTransaction()`.
 - **Broken Binary Data**: Caused by casting TOASTed `datum` directly. Fixed by using `DatumGetByteaP()`.
 - **Lazy Download Segfault**: Binary pointers pulled from `SPI_getbinval` were reused after more SPI work. Fixed by taking ownership with `PG_DETOAST_DATUM_COPY()` so subsequent queries cannot free the data we are still using.

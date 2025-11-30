@@ -105,7 +105,9 @@ pgstar_json_append_tuple(StringInfo buf, TupleDesc tupdesc, HeapTuple tuple)
 	{
 		Form_pg_attribute attr = TupleDescAttr(tupdesc, attnum - 1);
 		Oid			atttypid = attr->atttypid;
+		char	   *raw_value;
 		char	   *value;
+		size_t		value_len = 0;
 
 		if (attr->attisdropped)
 			continue;
@@ -117,9 +119,15 @@ pgstar_json_append_tuple(StringInfo buf, TupleDesc tupdesc, HeapTuple tuple)
 		escape_json(buf, NameStr(attr->attname));
 		appendStringInfoChar(buf, ':');
 
-		value = SPI_getvalue(tuple, tupdesc, attnum);
+		/* CRITICAL: Copy SPI_getvalue() result immediately - it's in transaction context */
+		raw_value = SPI_getvalue(tuple, tupdesc, attnum);
+		value = raw_value ? pstrdup(raw_value) : NULL;
+
 		if (value)
-			PGSTAR_TRACK_ALLOC("api:tuple_value", value, strlen(value) + 1);
+		{
+			value_len = strlen(value);
+			PGSTAR_TRACK_ALLOC("api:tuple_value", value, value_len + 1);
+		}
 
 		if (value == NULL)
 		{
@@ -131,7 +139,7 @@ pgstar_json_append_tuple(StringInfo buf, TupleDesc tupdesc, HeapTuple tuple)
 		PGSTAR_VERBOSE_LOG("api_tuple: attr=%s type=%u len=%zu",
 						   NameStr(attr->attname),
 						   atttypid,
-						   strlen(value));
+						   value_len);
 
 		switch (atttypid)
 		{
@@ -154,12 +162,19 @@ pgstar_json_append_tuple(StringInfo buf, TupleDesc tupdesc, HeapTuple tuple)
 				appendStringInfoString(buf, value);
 				break;
 			default:
-				escape_json(buf, value);
+				/* String types: escape for JSON */
+				{
+					/* escape_json() escapes special chars and adds surrounding quotes */
+					escape_json(buf, value);
+				}
 				break;
 		}
 
-		PGSTAR_TRACK_FREE("api:tuple_value", value);
-		pfree(value);
+		if (value)
+		{
+			PGSTAR_TRACK_FREE("api:tuple_value", value);
+			pfree(value);
+		}
 	}
 	appendStringInfoChar(buf, '}');
 }

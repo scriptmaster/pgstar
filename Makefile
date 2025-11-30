@@ -3,7 +3,7 @@
 # Default target
 all: auto
 
-install: extension-install restart create-extension
+install: extension-install
 
 # Extension management
 extension-install:
@@ -11,7 +11,9 @@ extension-install:
 	@make -s -C hello_world install
 	@make -s -C pgstar
 	@make -s -C pgstar install
-https://v1.emeraldai.cloud/app/tables/files
+	@make restart
+	@make create-extension
+
 # Server management
 restart:
 	@sudo systemctl restart postgresql

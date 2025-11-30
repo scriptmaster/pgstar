@@ -40,11 +40,11 @@ typedef struct PgstarAssetSeedUrl
 } PgstarAssetSeedUrl;
 
 static const PgstarAssetSeedUrl pgstar_asset_seed_urls[] = {
-	{"js/vue.global.prod.min.js", "https://cdnjs.cloudflare.com/ajax/libs/vue/3.5.22/vue.global.prod.min.js"},
+	/* vue.global.prod.min.js removed - now served directly from CDN in js_scripts.c */
 	{"favicon.ico", "https://emeraldai.cloud/favicon.ico"}
 };
 
-static const bool pgstar_downloads_enabled = true;
+static const bool pgstar_downloads_enabled = false;
 
 static bool pgstar_ui_cache_get(const char *key, char **body, size_t *body_len, const char **content_type);
 static void pgstar_ui_cache_put(const char *key, const char *body, size_t body_len, const char *content_type);
@@ -1270,6 +1270,10 @@ pgstar_ui_fetch_file(const char *file_name,
 	if (!success)
 	{
 		PGSTAR_VERBOSE_LOG("ui_fetch_file[%s]: returning failure", file_name ? file_name : "(null)");
+		/* CRITICAL: Clean up transaction even when file not found */
+		SPI_finish();
+		PopActiveSnapshot();
+		CommitTransactionCommand();
 		return false;
 	}
 

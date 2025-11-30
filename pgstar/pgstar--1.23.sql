@@ -100,24 +100,10 @@ SET text_data = EXCLUDED.text_data,
     updated_at = now()
 WHERE pgstar.files.is_custom = FALSE;
 
--- Add Vue.js reference (stored as URL in text_data for now)
-INSERT INTO pgstar.files (file_name, content_type, download_url, is_binary, is_download, is_custom)
-VALUES (
-  'js/vue.global.prod.min.js',
-  'application/javascript',
-  'https://cdnjs.cloudflare.com/ajax/libs/vue/3.5.22/vue.global.prod.min.js',
-  FALSE,
-  TRUE,
-  FALSE
-)
-ON CONFLICT (file_name) DO UPDATE
-SET download_url = EXCLUDED.download_url,
-    text_data = NULL,
-    content_type = EXCLUDED.content_type,
-    is_download = EXCLUDED.is_download,
-    is_binary = EXCLUDED.is_binary,
-    updated_at = now()
-WHERE pgstar.files.is_custom = FALSE;
+-- Vue.js is now served directly from CDN (see js_scripts.c)
+-- Removed vue.global.prod.min.js from files table to avoid large file segfaults
+-- CDN URL: https://cdnjs.cloudflare.com/ajax/libs/vue/3.5.22/vue.global.prod.min.js
+-- WHERE pgstar.files.is_custom = FALSE;
 
 -- Add Vue data-table component
 INSERT INTO pgstar.files (file_name, content_type, text_data, is_binary, is_custom)
@@ -677,7 +663,7 @@ VALUES (
 ',
   'text/html; charset=utf-8',
   '[]'::jsonb,
-  'vue.global.prod.min.js,vue-data-table.js',
+  'https://cdnjs.cloudflare.com/ajax/libs/vue/3.5.22/vue.global.prod.min.js,vue-data-table.js',
   '',
   FALSE
 )

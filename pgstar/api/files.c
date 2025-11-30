@@ -5,6 +5,7 @@
 #include "utils/snapmgr.h"
 #include "lib/stringinfo.h"
 #include "utils/builtins.h"
+#include "utils/json.h"
 
 #include "pgstar.h"
 
@@ -40,41 +41,99 @@ pgstar_json_files(void)
         ereport(ERROR,
                 (errmsg("pgstar: files query failed: %d", ret)));
 
+    if (SPI_tuptable == NULL)
+        ereport(ERROR,
+                (errmsg("pgstar: SPI_tuptable is NULL")));
+
     initStringInfo(&buf);
     appendStringInfoString(&buf, "{\"rows\":[");
 
     for (uint64 i = 0; i < SPI_processed; i++)
     {
-        HeapTuple   tup = SPI_tuptable->vals[i];
-        TupleDesc   tupdesc = SPI_tuptable->tupdesc;
+        HeapTuple   tup;
+        TupleDesc   tupdesc;
+        char       *raw_file_id;
+        char       *raw_file_name;
+        char       *raw_content_type;
+        char       *raw_is_binary;
+        char       *raw_is_custom;
+        char       *raw_is_download;
+        char       *raw_updated_at;
+        char       *file_id;
+        char       *file_name;
+        char       *content_type;
+        char       *is_binary;
+        char       *is_custom;
+        char       *is_download;
+        char       *updated_at;
         
-        char *file_id = SPI_getvalue(tup, tupdesc, 1);
-        char *file_name = SPI_getvalue(tup, tupdesc, 2);
-        char *content_type = SPI_getvalue(tup, tupdesc, 3);
-        char *is_binary = SPI_getvalue(tup, tupdesc, 4);
-        char *is_custom = SPI_getvalue(tup, tupdesc, 5);
-        char *is_download = SPI_getvalue(tup, tupdesc, 6);
-        char *updated_at = SPI_getvalue(tup, tupdesc, 7);
+        if (SPI_tuptable->vals == NULL || i >= SPI_tuptable->alloced)
+            ereport(ERROR,
+                    (errmsg("pgstar: invalid tuple index %llu", (unsigned long long)i)));
+        
+        tup = SPI_tuptable->vals[i];
+        tupdesc = SPI_tuptable->tupdesc;
+        
+        if (tup == NULL || tupdesc == NULL)
+            ereport(ERROR,
+                    (errmsg("pgstar: invalid tuple or tuple descriptor")));
+        
+        raw_file_id = SPI_getvalue(tup, tupdesc, 1);
+        raw_file_name = SPI_getvalue(tup, tupdesc, 2);
+        raw_content_type = SPI_getvalue(tup, tupdesc, 3);
+        raw_is_binary = SPI_getvalue(tup, tupdesc, 4);
+        raw_is_custom = SPI_getvalue(tup, tupdesc, 5);
+        raw_is_download = SPI_getvalue(tup, tupdesc, 6);
+        raw_updated_at = SPI_getvalue(tup, tupdesc, 7);
+
+        /* Copy SPI_getvalue results immediately - they're in transaction context */
+        file_id = raw_file_id ? pstrdup(raw_file_id) : NULL;
+        file_name = raw_file_name ? pstrdup(raw_file_name) : NULL;
+        content_type = raw_content_type ? pstrdup(raw_content_type) : NULL;
+        is_binary = raw_is_binary ? pstrdup(raw_is_binary) : NULL;
+        is_custom = raw_is_custom ? pstrdup(raw_is_custom) : NULL;
+        is_download = raw_is_download ? pstrdup(raw_is_download) : NULL;
+        updated_at = raw_updated_at ? pstrdup(raw_updated_at) : NULL;
 
         if (i > 0)
             appendStringInfoString(&buf, ",");
 
-        appendStringInfo(&buf, "{\"file_id\":%s,\"file_name\":", file_id ? file_id : "0");
+        appendStringInfoString(&buf, "{\"file_id\":");
+        if (file_id)
+            appendStringInfoString(&buf, file_id);
+        else
+            appendStringInfoString(&buf, "0");
         
-        /* quote_literal_cstr returns a palloc'd string with quotes, but we want JSON string escaping.
-         * For simplicity, let's assume file_names are relatively safe or use a JSON helper if available.
-         * Actually, we should be careful. Let's use a simple manual JSON escape or just print with quotes 
-         * if we trust the input (filenames usually don't have crazy chars, but they might).
-         * Postgres has `escape_json` but it might be internal. 
-         * Let's use a simple format string for now, assuming standard filenames.
-         */
-        appendStringInfo(&buf, "\"%s\",", file_name ? file_name : "");
+        appendStringInfoString(&buf, ",\"file_name\":");
+        if (file_name)
+            escape_json(&buf, file_name);
+        else
+            appendStringInfoString(&buf, "null");
+        appendStringInfoString(&buf, ",");
         
-        appendStringInfo(&buf, "\"content_type\":\"%s\",", content_type ? content_type : "");
-        appendStringInfo(&buf, "\"is_binary\":%s,", (is_binary && *is_binary == 't') ? "true" : "false");
-        appendStringInfo(&buf, "\"is_custom\":%s,", (is_custom && *is_custom == 't') ? "true" : "false");
-        appendStringInfo(&buf, "\"is_download\":%s,", (is_download && *is_download == 't') ? "true" : "false");
-        appendStringInfo(&buf, "\"updated_at\":\"%s\"}", updated_at ? updated_at : "");
+        appendStringInfoString(&buf, "\"content_type\":");
+        if (content_type)
+            escape_json(&buf, content_type);
+        else
+            appendStringInfoString(&buf, "null");
+        appendStringInfoString(&buf, ",");
+        
+        appendStringInfoString(&buf, "\"is_binary\":");
+        appendStringInfoString(&buf, (is_binary && is_binary[0] == 't') ? "true" : "false");
+        appendStringInfoString(&buf, ",\"is_custom\":");
+        appendStringInfoString(&buf, (is_custom && is_custom[0] == 't') ? "true" : "false");
+        appendStringInfoString(&buf, ",\"is_download\":");
+        appendStringInfoString(&buf, (is_download && is_download[0] == 't') ? "true" : "false");
+        
+        appendStringInfoString(&buf, ",\"updated_at\":");
+        if (updated_at)
+            escape_json(&buf, updated_at);
+        else
+            appendStringInfoString(&buf, "null");
+        appendStringInfoString(&buf, "}");
+
+        /* Don't free the copied strings - they're in transaction context and will be cleaned up by SPI_finish() */
+        /* The pstrdup() copies ensure the pointers are valid until we use them, but we don't need to free them */
     }
 
     appendStringInfoString(&buf, "],\"columns\":[\"file_id\",\"file_name\",\"content_type\",\"is_binary\",\"is_custom\",\"is_download\",\"updated_at\"]}\n");
@@ -84,7 +143,8 @@ pgstar_json_files(void)
     result_json = pstrdup(buf.data);
     MemoryContextSwitchTo(old_ctx);
 
-    pfree(buf.data);
+    /* Don't free buf.data - it will be cleaned up when transaction context is torn down */
+    /* pfree(buf.data); */
 
     SPI_finish();
     PopActiveSnapshot();
