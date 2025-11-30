@@ -65,8 +65,6 @@ pgstar_json_schemata(void)
     PopActiveSnapshot();
     CommitTransactionCommand();
 
-    pfree(buf.data);
-
     return result_json;
 }
 
@@ -132,8 +130,6 @@ pgstar_json_tables(void)
     SPI_finish();
     PopActiveSnapshot();
     CommitTransactionCommand();
-
-    pfree(buf.data);
 
     return result_json;
 }

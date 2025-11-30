@@ -101,6 +101,9 @@ pgstar_api_information_schema(int nseg, const char *segs[], PgstarResponse *resp
 		PG_TRY();
 		{
 			json = pgstar_json_schemata();
+			elog(pgstar_log_level,
+				 "pgstar: info_schema schemata response length=%zu bytes",
+				 json ? strlen(json) : 0);
 			resp->status_code = 200;
 			resp->status_text = "OK";
 			resp->content_type = "application/json";
@@ -123,6 +126,9 @@ pgstar_api_information_schema(int nseg, const char *segs[], PgstarResponse *resp
 		PG_TRY();
 		{
 			json = pgstar_json_tables();
+			elog(pgstar_log_level,
+				 "pgstar: info_schema tables response length=%zu bytes",
+				 json ? strlen(json) : 0);
 			resp->status_code = 200;
 			resp->status_text = "OK";
 			resp->content_type = "application/json";
@@ -439,6 +445,11 @@ pgstar_api_generic_table(const PgstarRequest *req,
 	}
 	PG_CATCH();
 	{
+		ErrorData  *edata = CopyErrorData();
+
+		if (edata)
+			elog(pgstar_log_level, "pgstar: generic API query failed: %s", edata->message);
+
 		FlushErrorState();
 		
 		/* Cleanup transaction */
@@ -448,10 +459,24 @@ pgstar_api_generic_table(const PgstarRequest *req,
 			AbortCurrentTransaction();
 		}
 		
-		resp->status_code = 500;
-		resp->status_text = "Internal Server Error";
-		resp->content_type = "application/json";
-		resp->body = pstrdup("{\"error\":\"generic api query failed\"}\n");
+		if (edata && edata->sqlerrcode == ERRCODE_UNDEFINED_TABLE)
+		{
+			resp->status_code = 404;
+			resp->status_text = "Not Found";
+			resp->content_type = "application/json";
+			resp->body = psprintf("{\"error\":\"relation %s.%s not found\"}\n",
+								  schema, table);
+		}
+		else
+		{
+			resp->status_code = 500;
+			resp->status_text = "Internal Server Error";
+			resp->content_type = "application/json";
+			resp->body = pstrdup("{\"error\":\"generic api query failed\"}\n");
+		}
+
+		if (edata)
+			FreeErrorData(edata);
 	}
 	PG_END_TRY();
 
