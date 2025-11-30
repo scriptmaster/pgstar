@@ -11,11 +11,13 @@
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
 #include "utils/varlena.h"
+#include "common/base64.h"
 #include "core/spi.h"
 
 #include <ctype.h>
 #include <string.h>
 #include <time.h>
+#include <limits.h>
 
 /* Simple in-memory cache for rendered UI assets (HTML/JS/CSS) */
 
@@ -42,7 +44,7 @@ static const PgstarAssetSeedUrl pgstar_asset_seed_urls[] = {
 	{"favicon.ico", "https://emeraldai.cloud/favicon.ico"}
 };
 
-static const bool pgstar_downloads_enabled = false;
+static const bool pgstar_downloads_enabled = true;
 
 static bool pgstar_ui_cache_get(const char *key, char **body, size_t *body_len, const char **content_type);
 static void pgstar_ui_cache_put(const char *key, const char *body, size_t body_len, const char *content_type);
@@ -52,6 +54,9 @@ bool pgstar_ui_fetch_file(const char *file_name,
 								  char **body, size_t *body_len, const char **content_type);
 static const char *pgstar_ui_seed_url(const char *file_name);
 static void pgstar_ui_mark_redownload(const char *file_name, const char *reason);
+static bool pgstar_should_store_as_text(const char *content_type, const char *body, size_t len);
+static char *pgstar_base64_encode_buffer(const char *src, size_t len);
+static char *pgstar_base64_decode_buffer(const char *src, size_t len, size_t *decoded_len);
 
 /*
  * Public API: ensure pgstar.pages exists and seed built-in rows.
@@ -687,15 +692,15 @@ pgstar_ui_mark_redownload(const char *file_name, const char *reason)
 			ereport(ERROR,
 					(errmsg("pgstar ui: SPI_connect failed during redownload reset")));
 
-		argtypes[0] = TEXTOID; /* text_data */
+		argtypes[0] = TEXTOID; /* download_url */
 		argtypes[1] = TEXTOID; /* file_name */
 		values[0] = CStringGetTextDatum(seed_url);
 		values[1] = CStringGetTextDatum(file_name);
 
 		SPI_execute_with_args(
 			"UPDATE pgstar.files "
-			"SET text_data = $1, "
-			"    binary_data = NULL, "
+			"SET text_data = NULL, "
+			"    download_url = $1, "
 			"    is_binary = FALSE, "
 			"    is_download = TRUE, "
 			"    updated_at = now() "
@@ -732,6 +737,85 @@ pgstar_ui_mark_redownload(const char *file_name, const char *reason)
 			 reason ? reason : "unknown");
 	}
 	PG_END_TRY();
+}
+
+static bool
+pgstar_should_store_as_text(const char *content_type, const char *body, size_t len)
+{
+	size_t		i;
+
+	if (content_type)
+	{
+		if (pg_strncasecmp(content_type, "text/", 5) == 0)
+			return true;
+		if (pg_strncasecmp(content_type, "application/javascript", 22) == 0)
+			return true;
+		if (pg_strncasecmp(content_type, "application/json", 16) == 0)
+			return true;
+		if (pg_strncasecmp(content_type, "application/xml", 15) == 0)
+			return true;
+		if (strstr(content_type, "charset"))
+			return true;
+	}
+
+	for (i = 0; i < len; i++)
+	{
+		unsigned char c = (unsigned char) body[i];
+
+		if (c == 0)
+			return false;
+		if (c < 0x09)
+			return false;
+		if (c < 0x20 && c != '\n' && c != '\r' && c != '\t')
+			return false;
+	}
+
+	return true;
+}
+
+static char *
+pgstar_base64_encode_buffer(const char *src, size_t len)
+{
+	int			enc_len;
+	int			actual;
+	char	   *dst;
+
+	if (len > INT_MAX)
+		ereport(ERROR,
+				(errmsg("pgstar: base64 encode length overflow: %zu", len)));
+
+	enc_len = pg_b64_enc_len((int) len);
+	dst = (char *) palloc(enc_len + 1);
+	actual = pg_b64_encode(src, (int) len, dst, enc_len);
+	if (actual < 0)
+		ereport(ERROR,
+				(errmsg("pgstar: base64 encode failed")));
+
+	dst[actual] = '\0';
+	return dst;
+}
+
+static char *
+pgstar_base64_decode_buffer(const char *src, size_t len, size_t *decoded_len)
+{
+	int			dec_len;
+	int			actual;
+	char	   *dst;
+
+	if (len > INT_MAX)
+		ereport(ERROR,
+				(errmsg("pgstar: base64 decode length overflow: %zu", len)));
+
+	dec_len = pg_b64_dec_len((int) len);
+	dst = (char *) palloc(dec_len > 0 ? dec_len : 1);
+	actual = pg_b64_decode(src, (int) len, dst, dec_len);
+	if (actual < 0)
+		ereport(ERROR,
+				(errmsg("pgstar: base64 decode failed")));
+
+	if (decoded_len)
+		*decoded_len = actual;
+	return dst;
 }
 
 /* -------------------------------------------------------------------------
@@ -899,7 +983,7 @@ pgstar_ui_fetch_file(const char *file_name,
 			
 			initStringInfo(&query_buf);
 			appendStringInfoString(&query_buf, 
-				"SELECT text_data, binary_data, is_binary, content_type, is_download "
+				"SELECT text_data, download_url, is_binary, content_type, is_download "
 				"FROM pgstar.files "
 				"WHERE file_name = $1 "
 				"ORDER BY file_id ASC "
@@ -915,6 +999,10 @@ pgstar_ui_fetch_file(const char *file_name,
 		if (ret != SPI_OK_SELECT)
 			ereport(ERROR,
 					(errmsg("pgstar ui: SPI_execute failed: %d", ret)));
+
+		PGSTAR_VERBOSE_LOG("ui_fetch_file[%s]: SPI_processed=%llu",
+						   file_name ? file_name : "(null)",
+						   (unsigned long long) SPI_processed);
 
 		if (SPI_processed == 0)
 		{
@@ -943,17 +1031,16 @@ pgstar_ui_fetch_file(const char *file_name,
 			HeapTuple	tup = SPI_tuptable->vals[0];
 			TupleDesc	tupdesc = SPI_tuptable->tupdesc;
 			char	   *text_data;
-			bytea	   *binary_data = NULL;
+			char	   *download_url;
 			bool		is_binary = false;
 			char	   *ct;
 			bool		ct_allocated = false;
 			bool		isnull;
 			bool		is_download = false;
-			Datum		binary_datum;
 			Datum		is_download_datum;
+			Datum		is_binary_datum;
 			char	   *raw_ct;
 			size_t		final_body_len = 0;
-			size_t		source_len = 0;
 			char	   *temp_body = NULL;
 			char	   *temp_ct = NULL;
 			
@@ -961,26 +1048,18 @@ pgstar_ui_fetch_file(const char *file_name,
 			 * immediately because subsequent SPI calls (like the UPDATE below) 
 			 * will invalidate the current SPI_tuptable and free this memory. */
 
-			char *raw_text_data = SPI_getvalue(tup, tupdesc, 1);
-			text_data = raw_text_data ? pstrdup(raw_text_data) : NULL;
-			
-			/* Correctly handle binary data (bytea) which might be TOASTed */
-			binary_datum = SPI_getbinval(tup, tupdesc, 2, &isnull);
-			if (!isnull)
-			{
-				/* Always take an owned copy so later SPI operations can't invalidate it */
-				binary_data = (bytea *) PG_DETOAST_DATUM_COPY(binary_datum);
-			}
-			else
-			{
-				binary_data = NULL;
-			}
+			char *raw_text_data;
+			char *raw_download_url;
 
-			if (!isnull && binary_data != NULL)
-			{
-				Datum is_binary_datum = SPI_getbinval(tup, tupdesc, 3, &isnull);
-				is_binary = !isnull && DatumGetBool(is_binary_datum);
-			}
+			raw_text_data = SPI_getvalue(tup, tupdesc, 1);
+			text_data = raw_text_data ? pstrdup(raw_text_data) : NULL;
+
+			raw_download_url = SPI_getvalue(tup, tupdesc, 2);
+			download_url = raw_download_url ? pstrdup(raw_download_url) : NULL;
+
+			is_binary_datum = SPI_getbinval(tup, tupdesc, 3, &isnull);
+			if (!isnull)
+				is_binary = DatumGetBool(is_binary_datum);
 			
 			raw_ct = SPI_getvalue(tup, tupdesc, 4);
 			ct = raw_ct ? pstrdup(raw_ct) : NULL;
@@ -989,160 +1068,112 @@ pgstar_ui_fetch_file(const char *file_name,
 			if (!isnull)
 				is_download = DatumGetBool(is_download_datum);
 
-			PGSTAR_VERBOSE_LOG("ui_fetch_file[%s]: row found is_binary=%d is_download=%d",
+			PGSTAR_VERBOSE_LOG("ui_fetch_file[%s]: row found is_binary=%d is_download=%d url=%s",
 							   file_name ? file_name : "(null)",
 							   is_binary ? 1 : 0,
-							   is_download ? 1 : 0);
+							   is_download ? 1 : 0,
+							   download_url ? download_url : "(null)");
 
-			/* Handle download if requested and text_data is a URL */
-			if (is_download && text_data != NULL && !pgstar_downloads_enabled)
+			if (is_download)
 			{
-				char	   *placeholder = psprintf("/* download disabled: %s (%s) */\n",
-												   file_name ? file_name : "(unknown)",
-												   text_data);
+				const char *remote_url = download_url ? download_url : text_data;
 
-				PGSTAR_VERBOSE_LOG("ui_fetch_file[%s]: download disabled, serving placeholder for %s",
-								   file_name ? file_name : "(null)",
-								   text_data);
+				if (remote_url == NULL)
+					ereport(ERROR,
+							(errmsg("pgstar: download requested for '%s' but download_url is NULL",
+									file_name ? file_name : "(null)")));
 
-				text_data = placeholder;
-				is_binary = false;
-				is_download = false;
-			}
-			else if (is_download && text_data != NULL &&
-					 (strncmp(text_data, "http://", 7) == 0 || strncmp(text_data, "https://", 8) == 0))
-			{
-				size_t downloaded_len = 0;
-				char *downloaded_ct = NULL;
-				char *downloaded_body;
-				
-				elog(pgstar_log_level, "pgstar: attempting download from '%s'", text_data);
-				downloaded_body = pgstar_http_download(text_data, &downloaded_len, &downloaded_ct);
-
-				if (downloaded_body != NULL)
+				if (!pgstar_downloads_enabled)
 				{
-					/* Prepare update query */
-					Oid argtypes_upd[3];
-					Datum values_upd[3];
-					char nulls_upd[3] = {' ', ' ', ' '};
-					bytea *bdata;
-					int upd_ret;
+					char	   *placeholder = psprintf("/* download disabled: %s (%s) */\n",
+													   file_name ? file_name : "(unknown)",
+													   remote_url);
 
-					elog(pgstar_log_level, "pgstar: successfully downloaded '%s' (%zu bytes)", text_data, downloaded_len);
-					
-					/* Update database with downloaded content */
-					/* We need to update the same row we just found. 
-					 * Since we don't have the ID handy (didn't select it), we'll update by file_name.
-					 * We are in a transaction. */
-					 
-					/* Use hex encoding for binary data insertion to be safe */
-					/* Actually, SPI_execute_with_args is better for binary, but we want to stick to inlined/simple for now if possible?
-					 * No, for binary update, parameter binding is much safer and easier than hex escaping.
-					 * We already use SPI. Let's use SPI_execute_with_args for the UPDATE.
-					 */
-					/* Update columns: binary_data, text_data=NULL, is_binary=TRUE, is_download=FALSE, content_type */
-					/* Note: We use BYTEA for the content. */
-					
-					/* We need to use parameters for bytea to avoid escaping hell */
-					
-					argtypes_upd[0] = BYTEAOID;
-					// values_upd[0] set below
-					
-					argtypes_upd[1] = TEXTOID;
-					// values_upd[1] set below
-					
-					argtypes_upd[2] = TEXTOID; /* file_name */
-					values_upd[2] = CStringGetTextDatum(file_name);
-					
-					/* Create bytea datum */
-					/* We must use `byteain()` or direct structure creation, but SPI parameters work best with direct pointer */
-					/* However, `PointerGetDatum` might be unsafe if we just cast a char* to bytea*. 
-					   The bytea struct has a 4-byte header for size (varlena). */
-					
-					bdata = (bytea *) palloc(downloaded_len + VARHDRSZ);
-					SET_VARSIZE(bdata, downloaded_len + VARHDRSZ);
-					memcpy(VARDATA(bdata), downloaded_body, downloaded_len);
-					values_upd[0] = PointerGetDatum(bdata);
-					
-					if (downloaded_ct)
-						values_upd[1] = CStringGetTextDatum(downloaded_ct);
-					else
-						values_upd[1] = CStringGetTextDatum(ct ? ct : "application/octet-stream");
+					PGSTAR_VERBOSE_LOG("ui_fetch_file[%s]: download disabled, serving placeholder for %s",
+									   file_name ? file_name : "(null)",
+									   remote_url);
 
-					upd_ret = SPI_execute_with_args(
-						"UPDATE pgstar.files SET "
-						"binary_data = $1, "
-						"text_data = NULL, "
-						"is_binary = TRUE, "
-						"is_download = FALSE, "
-						"content_type = $2, "
-						"updated_at = now() "
-						"WHERE file_name = $3",
-						3, argtypes_upd, values_upd, nulls_upd,
-						false, 0);
-						
-					if (upd_ret == SPI_OK_UPDATE) {
-						elog(pgstar_log_level, "pgstar: updated pgstar.files with downloaded content");
-					} else {
-						elog(WARNING, "pgstar: failed to update pgstar.files after download: %d", upd_ret);
-					}
-					
-					/* Use the downloaded data for response */
-					/* Free old pointers if needed (they are from SPI, so no manual free) */
-					
-					/* Set new values for response construction */
-					is_binary = true;
-					/* CRITICAL FIX: The `bdata` we created above has a VARHDRSZ (4-byte length header).
-					 * If we assign `binary_data = bdata;` directly, later code expects `binary_data` to be a Postgres `bytea*`
-					 * from which it extracts data using `VARDATA()` and `VARSIZE()`.
-					 * 
-					 * However, `pgstar_ui_fetch_file` logic below (lines ~890+) does:
-					 *   if (is_binary && binary_data != NULL) {
-					 *      source_len = VARSIZE(binary_data) - VARHDRSZ;
-					 *      bin_data = VARDATA(binary_data);
-					 *      ...
-					 *   }
-					 * 
-					 * So `bdata` (which IS a valid bytea struct with header) IS CORRECT for `binary_data`.
-					 * 
-					 * BUT! If we are seeing "broken binary data", maybe the download itself included extra headers
-					 * or the offset is wrong?
-					 * 
-					 * Wait, `downloaded_body` from `pgstar_http_download` is a pure raw buffer (char*).
-					 * We wrapped it into a `bytea` struct in `bdata`.
-					 * 
-					 * Let's verify if `bdata` persists correctly in the current memory context?
-					 * We are inside `SPI_connect()` block. `palloc` allocates in the current SPI context.
-					 * `bdata` is passed to SPI_execute_with_args.
-					 * Then we assign `binary_data = bdata`.
-					 * Then we proceed to use `binary_data`.
-					 * 
-					 * Logic looks sound for a fresh download.
-					 * 
-					 * WHAT IF: The "broken" data is because we are mixing up contexts or the `downloaded_body`
-					 * wasn't pure binary? (e.g. transfer-encoding chunked?)
-					 * The simple HTTP client in client.c DOES NOT handle Transfer-Encoding: chunked.
-					 * If the server sends chunked response, we'll see raw chunks with hex sizes in the binary.
-					 * 
-					 * `emeraldai.cloud` might be behind Nginx/Cloudflare which often uses chunked encoding.
-					 */
-					binary_data = bdata; /* This is palloc'd in current context */
-					text_data = NULL;
-					if (downloaded_ct) ct = downloaded_ct;
-					
-					/* Note: We don't free downloaded_body yet, we copied it to bdata */
-					pfree(downloaded_body);
+					if (text_data)
+						pgstar_safe_pfree(text_data);
+					text_data = placeholder;
+					is_binary = false;
+					is_download = false;
 				}
 				else
 				{
-					elog(WARNING, "pgstar: failed to download '%s'", text_data);
+					size_t downloaded_len = 0;
+					char *downloaded_ct = NULL;
+					char *downloaded_body;
+					bool	store_as_text;
+					Oid		argtypes_upd[4];
+					Datum	values_upd[4];
+					char	nulls_upd[4] = {' ', ' ', ' ', ' '};
+					int		upd_ret;
+
+					elog(pgstar_log_level, "pgstar: attempting download from '%s'", remote_url);
+					downloaded_body = pgstar_http_download(remote_url, &downloaded_len, &downloaded_ct);
+
+					if (downloaded_body != NULL)
+					{
+						store_as_text = pgstar_should_store_as_text(downloaded_ct ? downloaded_ct : ct,
+																	downloaded_body,
+																	downloaded_len);
+						if (text_data)
+							pgstar_safe_pfree(text_data);
+						if (store_as_text)
+							text_data = pnstrdup(downloaded_body, downloaded_len);
+						else
+							text_data = pgstar_base64_encode_buffer(downloaded_body, downloaded_len);
+
+						is_binary = !store_as_text;
+						is_download = false;
+
+						if (downloaded_ct)
+						{
+							if (ct_allocated && ct)
+								pgstar_safe_pfree(ct);
+							ct = downloaded_ct;
+							ct_allocated = true;
+						}
+
+						argtypes_upd[0] = TEXTOID;
+						argtypes_upd[1] = BOOLOID;
+						argtypes_upd[2] = TEXTOID;
+						argtypes_upd[3] = TEXTOID;
+						values_upd[0] = CStringGetTextDatum(text_data);
+						values_upd[1] = BoolGetDatum(is_binary);
+						values_upd[2] = CStringGetTextDatum(ct ? ct : "application/octet-stream");
+						values_upd[3] = CStringGetTextDatum(file_name);
+
+						upd_ret = SPI_execute_with_args(
+							"UPDATE pgstar.files SET "
+							"text_data = $1, "
+							"download_url = NULL, "
+							"is_binary = $2, "
+							"is_download = FALSE, "
+							"content_type = $3, "
+							"updated_at = now() "
+							"WHERE file_name = $4",
+							4, argtypes_upd, values_upd, nulls_upd,
+							false, 0);
+						
+						if (upd_ret != SPI_OK_UPDATE)
+							elog(WARNING, "pgstar: failed to update pgstar.files after download: %d", upd_ret);
+
+						pfree(downloaded_body);
+					}
+					else
+					{
+						elog(WARNING, "pgstar: failed to download '%s'", remote_url);
+					}
 				}
 			}
 
-			/* Log if file exists but has no data */
-			if (text_data == NULL && (isnull || binary_data == NULL))
+			if (text_data == NULL)
 			{
-				elog(pgstar_log_level, "pgstar: file '%s' found but has NULL text_data and binary_data", file_name);
+				elog(pgstar_log_level, "pgstar: file '%s' has NULL text_data", file_name);
+				text_data = pstrdup("");
+				is_binary = false;
 			}
 
 			if (ct == NULL)
@@ -1157,43 +1188,16 @@ pgstar_ui_fetch_file(const char *file_name,
 				ct_allocated = true;
 			}
 
-			/* Extract data lengths and content while still in transaction context.
-			 * We must read from SPI pointers before switching contexts. */
-			if (is_binary && binary_data != NULL)
+			if (is_binary)
 			{
-				/* Extract binary data while still in transaction context */
-				Size raw_size = VARSIZE(binary_data);
+				Size decoded_len = 0;
 
-				PGSTAR_VERBOSE_LOG("ui_fetch_file[%s]: binary VARSIZE=%zu",
-								   file_name ? file_name : "(null)",
-								   (Size) raw_size);
-
-				if (raw_size <= VARHDRSZ)
-					ereport(ERROR,
-							(errmsg("pgstar: invalid binary length (%zu) for '%s'",
-									(size_t) raw_size,
-									file_name ? file_name : "(null)")));
-
-				source_len = raw_size - VARHDRSZ;
-				{
-					char *bin_data = VARDATA(binary_data);
-					temp_body = (char *) palloc(source_len);
-					memcpy(temp_body, bin_data, source_len);
-					final_body_len = source_len;
-				}
-			}
-			else if (text_data != NULL)
-			{
-				/* Extract text data while still in transaction context */
-				temp_body = pstrdup(text_data);
-				source_len = strlen(text_data);
-				final_body_len = 0; /* Will use strlen in response */
+				temp_body = pgstar_base64_decode_buffer(text_data, strlen(text_data), &decoded_len);
+				final_body_len = decoded_len;
 			}
 			else
 			{
-				/* Empty file */
-				temp_body = pstrdup("");
-				source_len = 0;
+				temp_body = pstrdup(text_data);
 				final_body_len = 0;
 			}
 			
@@ -1237,7 +1241,7 @@ pgstar_ui_fetch_file(const char *file_name,
 			PGSTAR_VERBOSE_LOG("ui_fetch_file[%s]: success (binary=%d, len=%zu)",
 							   file_name ? file_name : "(null)",
 							   (final_body_len > 0) ? 1 : 0,
-							   final_body_len > 0 ? final_body_len : (source_len));
+							   final_body_len);
 		}
 	}
 	PG_CATCH();

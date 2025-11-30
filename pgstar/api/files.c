@@ -28,7 +28,7 @@ pgstar_json_files(void)
         ereport(ERROR,
                 (errmsg("pgstar: SPI_connect failed: %d", ret)));
 
-    /* Select file metadata. We don't select the actual content (text_data/binary_data) 
+    /* Select file metadata. We don't select the actual payload (text/base64 data)
      * to keep the list lightweight. */
     ret = SPI_execute(
         "SELECT file_id, file_name, content_type, is_binary, is_custom, is_download, updated_at "

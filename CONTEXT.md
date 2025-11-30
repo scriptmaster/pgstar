@@ -6,7 +6,10 @@
 - **Networking**: Custom TCP/HTTP stack (`tcp/*.c`, `http/*.c`) with OpenSSL support (`-lssl -lcrypto`).
 - **Frontend**: Vue.js (migrated from Datastar).
 - **Storage**:
-  - `pgstar.files`: Static assets (JS/CSS/Vue), binary data (favicon, images), and lazy-downloadable URLs.
+  - `pgstar.files`: Static assets (JS/CSS/Vue). Every payload lives in `text_data`:
+    - Plain UTF-8 for textual assets
+    - Base64-encoded text for binary assets (favicon, images, etc.)
+    - Remote CDN/HTTP sources recorded via `download_url` when `is_download=TRUE`
   - `pgstar.pages`: Legacy/Dynamic HTML pages.
 
 ## Critical Coding Standards
@@ -42,12 +45,11 @@ PostgreSQL uses a hierarchical memory context system.
 ## Feature Implementation Details
 
 ### Asset Management (`pgstar.files`)
-- **Dual Mode**: Stores either `text_data` (for code) or `binary_data` (for images/compiled assets).
+- **Single Storage Column**: `text_data` holds the asset payload. Binary blobs are base64-encoded before insertion; textual assets remain raw UTF-8 strings.
 - **Lazy Downloads**:
-  - If `is_download = TRUE` and `text_data` is a URL (http/https):
-  - On first access, the worker downloads the content using the built-in HTTP client (supports OpenSSL).
-  - It **updates the row** with the downloaded content (into `binary_data` or `text_data`), sets `is_download = FALSE`, and serves the content.
-  - This allows "CDN-like" behavior where assets are fetched once and served from the DB thereafter.
+  - `download_url` stores the upstream HTTP/HTTPS source when `is_download = TRUE`.
+  - On first access (and when downloads are enabled), the worker fetches the content, base64-encodes it if necessary, stores the result in `text_data`, clears `download_url`, flips `is_download` to `FALSE`, and serves the decoded body.
+  - This keeps all rows within PostgreSQL's TEXT types while still supporting CDN-style seeding.
 
 ### HTTP Client
 - **Capabilities**: Supports HTTP/1.1, HTTPS (via OpenSSL), and basic `Transfer-Encoding: chunked`.
@@ -64,3 +66,4 @@ PostgreSQL uses a hierarchical memory context system.
 - **Intermittent Crashes on Download**: Caused by `CommitTransactionCommand()` in `PG_CATCH` block (illegal state). Fixed by using `AbortCurrentTransaction()`.
 - **Broken Binary Data**: Caused by casting TOASTed `datum` directly. Fixed by using `DatumGetByteaP()`.
 - **Lazy Download Segfault**: Binary pointers pulled from `SPI_getbinval` were reused after more SPI work. Fixed by taking ownership with `PG_DETOAST_DATUM_COPY()` so subsequent queries cannot free the data we are still using.
+- **bytea Storage Removed**: Large assets now live as TEXT (plain or base64). Schema introduces `download_url` for lazy fetches, and the UI layer base64 encodes/decodes automatically to avoid TOAST lifetime issues.

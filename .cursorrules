@@ -12,6 +12,7 @@ You are an expert PostgreSQL extension developer working on `pgstar`.
 - **Binary Safety**:
   - ALWAYS use `DatumGetByteaP()` for `bytea` columns to handle TOAST/compression correctly.
   - Track `body_len` explicitly for all binary data; do not rely on `strlen`.
+  - For UI assets, binary payloads must be base64-encoded into `text_data`; never reintroduce `BYTEA` columns to `pgstar.files`.
 - **Concurrency**: ALWAYS put `CHECK_FOR_INTERRUPTS()` in any `for(;;)` or `while` loop in background workers.
 - **SQL Execution**: Prefer inlining literals (`quote_literal_cstr`) for simple lookups to avoid SPI parameter bugs.
 - **Logging**: Use `elog(pgstar_log_level, ...)` for info/debug logs.

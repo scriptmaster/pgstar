@@ -1,9 +1,9 @@
 .PHONY: extension-install extension-clean restart test run auto auto-run log logs tail psql e2e print-pwd fetch-assets
 
 # Default target
-all: extension-install auto
+all: auto
 
-install: extension-install
+install: extension-install restart create-extension
 
 # Extension management
 extension-install:
@@ -11,18 +11,17 @@ extension-install:
 	@make -s -C hello_world install
 	@make -s -C pgstar
 	@make -s -C pgstar install
-
-extension-clean:
-	@make -s -C pgstar clean
-	@make -s -C hello_world clean
-
+https://v1.emeraldai.cloud/app/tables/files
 # Server management
 restart:
 	@sudo systemctl restart postgresql
 
 # Testing and Running
-test: extension-install restart
+test: extension-install restart create-extension
 	@PGPASSWORD="pgstar" psql -U pgstar -d pgstar -h localhost -c "SELECT 1" > /dev/null
+
+create-extension:
+	@PGPASSWORD="pgstar" psql -U pgstar -d pgstar -h localhost -c "DROP EXTENSION IF EXISTS pgstar CASCADE; CREATE EXTENSION pgstar;"
 
 run: extension-install restart
 	@PGPASSWORD="pgstar" psql -U pgstar -d pgstar -h localhost -f ./run.sql

@@ -71,20 +71,19 @@ CREATE TABLE IF NOT EXISTS pgstar.pages (
 );
 
 CREATE TABLE IF NOT EXISTS pgstar.files (
-  file_id      BIGSERIAL PRIMARY KEY,
-  file_name    TEXT UNIQUE NOT NULL,
-  content_type TEXT NOT NULL
-               DEFAULT 'application/octet-stream',
-  text_data    TEXT,
-  binary_data  BYTEA,
-  is_binary    BOOLEAN NOT NULL DEFAULT FALSE,
-  is_custom    BOOLEAN NOT NULL DEFAULT FALSE,
-  is_download  BOOLEAN NOT NULL DEFAULT FALSE,
-  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  file_id       BIGSERIAL PRIMARY KEY,
+  file_name     TEXT UNIQUE NOT NULL,
+  content_type  TEXT NOT NULL
+                DEFAULT 'application/octet-stream',
+  text_data     TEXT,
+  download_url  TEXT,
+  is_binary     BOOLEAN NOT NULL DEFAULT FALSE,
+  is_custom     BOOLEAN NOT NULL DEFAULT FALSE,
+  is_download   BOOLEAN NOT NULL DEFAULT FALSE,
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   CHECK (
-    (is_binary = TRUE AND binary_data IS NOT NULL AND text_data IS NULL) OR
-    (is_binary = FALSE AND text_data IS NOT NULL AND binary_data IS NULL) OR
-    (is_download = TRUE AND text_data IS NOT NULL)
+    (is_download = TRUE AND download_url IS NOT NULL) OR
+    (is_download = FALSE AND text_data IS NOT NULL)
   )
 );
 
@@ -102,7 +101,7 @@ SET text_data = EXCLUDED.text_data,
 WHERE pgstar.files.is_custom = FALSE;
 
 -- Add Vue.js reference (stored as URL in text_data for now)
-INSERT INTO pgstar.files (file_name, content_type, text_data, is_binary, is_download, is_custom)
+INSERT INTO pgstar.files (file_name, content_type, download_url, is_binary, is_download, is_custom)
 VALUES (
   'js/vue.global.prod.min.js',
   'application/javascript',
@@ -112,11 +111,11 @@ VALUES (
   FALSE
 )
 ON CONFLICT (file_name) DO UPDATE
-SET text_data = EXCLUDED.text_data,
+SET download_url = EXCLUDED.download_url,
+    text_data = NULL,
     content_type = EXCLUDED.content_type,
     is_download = EXCLUDED.is_download,
     is_binary = EXCLUDED.is_binary,
-    binary_data = NULL,
     updated_at = now()
 WHERE pgstar.files.is_custom = FALSE;
 
@@ -228,7 +227,7 @@ SET text_data = EXCLUDED.text_data,
 WHERE pgstar.files.is_custom = FALSE;
 
 -- Add default favicon (lazy download)
-INSERT INTO pgstar.files (file_name, content_type, text_data, is_binary, is_download, is_custom)
+INSERT INTO pgstar.files (file_name, content_type, download_url, is_binary, is_download, is_custom)
 VALUES (
   'favicon.ico',
   'image/x-icon',
@@ -238,11 +237,11 @@ VALUES (
   FALSE
 )
 ON CONFLICT (file_name) DO UPDATE
-SET text_data = EXCLUDED.text_data,
+SET download_url = EXCLUDED.download_url,
+    text_data = NULL,
     content_type = EXCLUDED.content_type,
     is_download = EXCLUDED.is_download,
     is_binary = EXCLUDED.is_binary,
-    binary_data = NULL,
     updated_at = now()
 WHERE pgstar.files.is_custom = FALSE;
 
