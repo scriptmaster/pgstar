@@ -1,5 +1,6 @@
 #include "postgres.h"
 
+#include "pgstar.h"
 #include "http/request.h"
 
 #include "lib/stringinfo.h"
@@ -162,9 +163,9 @@ pgstar_http_request_handle(int client_fd, const char *peek_buf, ssize_t peek_len
 	pgstar_http_send_response(client_fd, &resp);
 
 	if (resp.body)
-		pfree(resp.body);
+		pgstar_safe_pfree(resp.body);
 	if (resp.log)
-		pfree(resp.log);
+		pgstar_safe_pfree(resp.log);
 
-	pfree(request.data);
+	pgstar_safe_pfree(request.data);
 }

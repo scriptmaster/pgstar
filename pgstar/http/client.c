@@ -242,7 +242,7 @@ pgstar_http_download(const char *url, size_t *len, char **content_type)
 	if (!body_start)
 	{
 		elog(WARNING, "pgstar: invalid HTTP response (no headers)");
-		pfree(response);
+		pgstar_safe_pfree(response);
 		return NULL;
 	}
 
@@ -254,7 +254,7 @@ pgstar_http_download(const char *url, size_t *len, char **content_type)
 		{
 			elog(WARNING, "pgstar: HTTP error status: %.3s", status + 1);
 			/* We could return the body as error text, but for now NULL */
-			pfree(response);
+			pgstar_safe_pfree(response);
 			return NULL;
 		}
 	}
@@ -325,7 +325,7 @@ pgstar_http_download(const char *url, size_t *len, char **content_type)
 		}
 		
 		*len = decoded_len;
-		pfree(response);
+		pgstar_safe_pfree(response);
 		return decoded;
 	}
 	else
@@ -333,7 +333,7 @@ pgstar_http_download(const char *url, size_t *len, char **content_type)
 		*len = total_read - header_len;
 		char *final_body = (char *) palloc(*len);
 		memcpy(final_body, body_start, *len);
-		pfree(response);
+		pgstar_safe_pfree(response);
 		return final_body;
 	}
 }

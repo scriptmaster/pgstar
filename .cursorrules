@@ -6,24 +6,31 @@ You are an expert PostgreSQL extension developer working on `pgstar`.
 - **Memory Safety**: 
   - ALWAYS Deep Copy SPI results to caller's memory context before committing transaction.
   - NEVER return pointers allocated inside a transaction scope without copying them.
-  - **SPI_getvalue() STRICT RULES**:
-    - `SPI_getvalue()` returns pointers that are ONLY valid until `SPI_finish()` is called.
-    - **MANDATORY**: Copy ALL `SPI_getvalue()` results immediately with `pstrdup()` before ANY use:
+  - **SPI_getvalue() WARNING - AVOID IF POSSIBLE**:
+    - **CRITICAL**: `SPI_getvalue()` can return corrupted pointers that cause segfaults when passed to `strlen()` or `pstrdup()`.
+    - **PREFERRED PATTERN**: Use `SPI_getbinval()` → `Datum` → type output function instead:
       ```c
-      char *raw_value = SPI_getvalue(tup, tupdesc, colnum);
-      char *value = raw_value ? pstrdup(raw_value) : NULL;
+      bool isnull;
+      Datum attr_datum = SPI_getbinval(tuple, tupdesc, attnum, &isnull);
+      if (!isnull) {
+          Oid output_func_oid;
+          bool output_func_isvarlena;
+          getTypeOutputInfo(atttypid, &output_func_oid, &output_func_isvarlena);
+          char *value = OidOutputFunctionCall(output_func_oid, attr_datum);
+          // value is guaranteed valid or raises normal Postgres ERROR (caught by PG_TRY)
+          // Use value, then pgstar_safe_pfree(value);
+      }
       ```
-    - **NEVER** use `SPI_getvalue()` pointers directly in:
-      - `appendStringInfo()` format strings
-      - `escape_json()` calls
-      - String operations or comparisons
-      - Any code that might execute after the current loop iteration
-    - **ALWAYS** free your `pstrdup()` copies after use (they're in transaction context):
-      ```c
-      if (value) pfree(value);
-      ```
-    - **NULL Safety**: Always check for NULL before dereferencing: `if (value && value[0] == 't')`
-    - **Exception**: The ONLY safe direct use is when building a `StringInfo` buffer and copying `buf.data` to caller's context BEFORE `SPI_finish()`, but the SAFEST pattern is still to `pstrdup()` first.
+    - **If you MUST use SPI_getvalue()** (legacy code):
+      - `SPI_getvalue()` returns pointers that are ONLY valid until `SPI_finish()` is called.
+      - **MANDATORY**: Copy ALL `SPI_getvalue()` results immediately with `pstrdup()` before ANY use.
+      - **NEVER** call `strlen()` or `pstrdup()` on `SPI_getvalue()` result without wrapping in `PG_TRY`/`PG_CATCH`.
+      - **NEVER** use `SPI_getvalue()` pointers directly in string operations.
+    - **MANDATORY**: NEVER use `pfree()` directly. ALWAYS use `pgstar_safe_pfree()` instead:
+      - `pgstar_safe_pfree()` is defined in `pgstar/core/utils.c` and declared in `pgstar/pgstar.h`
+      - It safely handles NULL pointers and catches errors gracefully to prevent segfaults
+      - Include `pgstar.h` in any file that needs to free memory: `#include "pgstar.h"`
+      - Example: `pgstar_safe_pfree(ptr);` instead of `pfree(ptr);`
   - When adding new helper functions, manage ownership explicitly: allocate in the correct context, free exactly once, and `pstrdup`/`escape_json` before `SPI_finish()` so no caller touches freed memory.
   - When returning `StringInfo`/buffers to the HTTP layer (e.g., `pgstar_json_*`), switch to the caller's memory context (`MemoryContextSwitchTo`) and copy before `SPI_finish()`; HTTP responses must never reference transaction-context memory.
   - For varlena datums (text/varchar/bytea) you intend to use after another SPI call, take ownership with `PG_DETOAST_DATUM_COPY` so later SPI work or TOAST detachment cannot invalidate your pointer.

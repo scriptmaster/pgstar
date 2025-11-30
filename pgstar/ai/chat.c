@@ -170,7 +170,7 @@ pgstar_route_v1_chat(const PgstarRequest *req, PgstarResponse *resp)
 	resp->body = json_resp.data;
 
 	if (model_output)
-		pfree(model_output);
+		pgstar_safe_pfree(model_output);
 }
 
 static void

@@ -1,5 +1,6 @@
 #include "postgres.h"
 
+#include "pgstar.h"
 #include "pages_layout.h"
 
 #include "lib/stringinfo.h"
@@ -33,11 +34,11 @@ pgstar_ui_append_meta_tags(StringInfo head, Jsonb *meta)
 		{
 			in_object = true;
 			if (http_equiv)
-				pfree(http_equiv);
+				pgstar_safe_pfree(http_equiv);
 			if (name)
-				pfree(name);
+				pgstar_safe_pfree(name);
 			if (content)
-				pfree(content);
+				pgstar_safe_pfree(content);
 			http_equiv = name = content = NULL;
 		}
 		else if (r == WJB_END_OBJECT)
@@ -65,7 +66,7 @@ pgstar_ui_append_meta_tags(StringInfo head, Jsonb *meta)
 		{
 			if (current_key)
 			{
-				pfree(current_key);
+					pgstar_safe_pfree(current_key);
 				current_key = NULL;
 			}
 			current_key = pnstrdup(v.val.string.val, v.val.string.len);
@@ -79,34 +80,34 @@ pgstar_ui_append_meta_tags(StringInfo head, Jsonb *meta)
 				if (pg_strcasecmp(current_key, "http-equiv") == 0)
 				{
 					if (http_equiv)
-						pfree(http_equiv);
+						pgstar_safe_pfree(http_equiv);
 					http_equiv = val;
 				}
 				else if (pg_strcasecmp(current_key, "name") == 0)
 				{
 					if (name)
-						pfree(name);
+						pgstar_safe_pfree(name);
 					name = val;
 				}
 				else if (pg_strcasecmp(current_key, "content") == 0)
 				{
 					if (content)
-						pfree(content);
+						pgstar_safe_pfree(content);
 					content = val;
 				}
 				else
 				{
-					pfree(val);
+					pgstar_safe_pfree(val);
 				}
 			}
 
-			pfree(current_key);
+					pgstar_safe_pfree(current_key);
 			current_key = NULL;
 		}
 	}
 
 	if (current_key)
-		pfree(current_key);
+					pgstar_safe_pfree(current_key);
 	if (http_equiv)
 		pfree(http_equiv);
 	if (name)

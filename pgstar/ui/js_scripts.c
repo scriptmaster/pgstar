@@ -1,5 +1,6 @@
 #include "postgres.h"
 
+#include "pgstar.h"
 #include "pages_layout.h"
 
 #include "lib/stringinfo.h"
@@ -56,6 +57,6 @@ pgstar_ui_append_js_scripts(StringInfo body, const char *js_names)
 						 type_attr, prefix, token);
 	}
 
-	pfree(work);
+	pgstar_safe_pfree(work);
 }
 

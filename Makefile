@@ -13,6 +13,7 @@ extension-install:
 	@make -s -C pgstar install
 	@make restart
 	@make create-extension
+	@make restart
 
 # Server management
 restart:
@@ -25,8 +26,9 @@ test: extension-install restart create-extension
 create-extension:
 	@PGPASSWORD="pgstar" psql -U pgstar -d pgstar -h localhost -c "DROP EXTENSION IF EXISTS pgstar CASCADE; CREATE EXTENSION pgstar;"
 
-run: extension-install restart
+run: extension-install
 	@PGPASSWORD="pgstar" psql -U pgstar -d pgstar -h localhost -f ./run.sql
+	@make restart
 
 # Logging
 logf:

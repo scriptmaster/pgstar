@@ -1,6 +1,7 @@
 #include "postgres.h"
 #include "fmgr.h"
 
+#include "pgstar.h"
 #include "utils/builtins.h"
 #include "utils/jsonb.h"
 
@@ -262,7 +263,7 @@ pgstar_http_append_headers_from_jsonb(StringInfo buf, Jsonb *jb)
 		{
 			if (current_key)
 			{
-				pfree(current_key);
+				pgstar_safe_pfree(current_key);
 				current_key = NULL;
 			}
 
@@ -278,13 +279,13 @@ pgstar_http_append_headers_from_jsonb(StringInfo buf, Jsonb *jb)
 								 v.val.string.val);
 			}
 
-			pfree(current_key);
+			pgstar_safe_pfree(current_key);
 			current_key = NULL;
 		}
 	}
 
 	if (current_key)
-		pfree(current_key);
+		pgstar_safe_pfree(current_key);
 }
 
 

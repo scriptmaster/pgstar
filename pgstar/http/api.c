@@ -5,8 +5,10 @@
 #include "access/xact.h"
 #include "catalog/pg_type.h"
 #include "executor/spi.h"
+#include "fmgr.h"
 #include "tcop/tcopprot.h"
 #include "utils/builtins.h"
+#include "utils/fmgrprotos.h"
 #include "utils/json.h"
 #include "utils/snapmgr.h"
 
@@ -61,10 +63,14 @@ pgstar_route_api(const PgstarRequest *req, PgstarResponse *resp)
 	/* /api/files endpoint */
 	if (nseg == 2 && strcmp(segs[1], "files") == 0)
 	{
-		char *json = NULL;
+		char	   *json = NULL;
+
 		PG_TRY();
 		{
 			json = pgstar_json_files();
+			elog(pgstar_log_level,
+				 "pgstar: files response length=%zu bytes",
+				 json ? strlen(json) : 0);
 			resp->status_code = 200;
 			resp->status_text = "OK";
 			resp->content_type = "application/json";
@@ -72,16 +78,16 @@ pgstar_route_api(const PgstarRequest *req, PgstarResponse *resp)
 		}
 		PG_CATCH();
 		{
+			ErrorData  *edata = CopyErrorData();
+
+			if (edata)
+				elog(pgstar_log_level, "pgstar: files query failed: %s", edata->message);
+
 			FlushErrorState();
-			
-			/* Cleanup transaction */
-			if (IsTransactionState()) {
-				SPI_finish();
-				PopActiveSnapshot();
-				AbortCurrentTransaction();
-			}
-			
-			if (json) pfree(json);
+
+			if (edata)
+				FreeErrorData(edata);
+
 			resp->status_code = 500;
 			resp->status_text = "Internal Server Error";
 			resp->content_type = "application/json";
@@ -99,18 +105,40 @@ static void
 pgstar_json_append_tuple(StringInfo buf, TupleDesc tupdesc, HeapTuple tuple)
 {
 	bool		first = true;
+	int			natts;
+	int			attnum;
+	Oid			output_func_oid;
+	bool		output_func_isvarlena;
+
+	/* Safety checks */
+	if (buf == NULL || tupdesc == NULL || tuple == NULL)
+		ereport(ERROR,
+				(errmsg("pgstar: invalid parameters to pgstar_json_append_tuple")));
+
+	/* Capture natts once before loop */
+	natts = tupdesc->natts;
+	if (natts < 0 || natts > 10000)
+		ereport(ERROR,
+				(errmsg("pgstar: invalid natts value %d in tuple descriptor", natts)));
 
 	appendStringInfoChar(buf, '{');
-	for (int attnum = 1; attnum <= tupdesc->natts; attnum++)
+	for (attnum = 1; attnum <= natts; attnum++)
 	{
-		Form_pg_attribute attr = TupleDescAttr(tupdesc, attnum - 1);
-		Oid			atttypid = attr->atttypid;
-		char	   *raw_value;
-		char	   *value;
-		size_t		value_len = 0;
+		Form_pg_attribute attr;
+		Oid			atttypid;
+		bool		isnull;
+		Datum		attr_datum;
+		char	   *value = NULL;
 
-		if (attr->attisdropped)
+		/* Safety checks */
+		if (attnum < 1 || attnum > natts)
 			continue;
+
+		attr = TupleDescAttr(tupdesc, attnum - 1);
+		if (attr == NULL || attr->attisdropped)
+			continue;
+
+		atttypid = attr->atttypid;
 
 		if (!first)
 			appendStringInfoChar(buf, ',');
@@ -119,61 +147,68 @@ pgstar_json_append_tuple(StringInfo buf, TupleDesc tupdesc, HeapTuple tuple)
 		escape_json(buf, NameStr(attr->attname));
 		appendStringInfoChar(buf, ':');
 
-		/* CRITICAL: Copy SPI_getvalue() result immediately - it's in transaction context */
-		raw_value = SPI_getvalue(tuple, tupdesc, attnum);
-		value = raw_value ? pstrdup(raw_value) : NULL;
+		/* SAFE PATTERN: Use SPI_getbinval() → Datum → output function */
+		/* This avoids SPI_getvalue() which can return corrupted pointers */
+		attr_datum = SPI_getbinval(tuple, tupdesc, attnum, &isnull);
 
-		if (value)
-		{
-			value_len = strlen(value);
-			PGSTAR_TRACK_ALLOC("api:tuple_value", value, value_len + 1);
-		}
-
-		if (value == NULL)
+		if (isnull)
 		{
 			appendStringInfoString(buf, "null");
 			PGSTAR_VERBOSE_LOG("api_tuple: attr=%s NULL", NameStr(attr->attname));
-			continue;
 		}
-
-		PGSTAR_VERBOSE_LOG("api_tuple: attr=%s type=%u len=%zu",
-						   NameStr(attr->attname),
-						   atttypid,
-						   value_len);
-
-		switch (atttypid)
+		else
 		{
-			case BOOLOID:
-				appendStringInfoString(buf,
-									   (value[0] == 't' && value[1] == '\0')
-									   ? "true" : "false");
-				break;
-			case INT2OID:
-			case INT4OID:
-			case INT8OID:
-			case OIDOID:
-			case FLOAT4OID:
-			case FLOAT8OID:
-			case NUMERICOID:
-				appendStringInfoString(buf, value);
-				break;
-			case JSONOID:
-			case JSONBOID:
-				appendStringInfoString(buf, value);
-				break;
-			default:
-				/* String types: escape for JSON */
+			/* Get the type's output function - this is safe and guaranteed to work */
+			getTypeOutputInfo(atttypid, &output_func_oid, &output_func_isvarlena);
+
+			/* Call the output function to convert Datum to C string */
+			/* This will either return a valid string or raise a normal Postgres ERROR */
+			value = OidOutputFunctionCall(output_func_oid, attr_datum);
+
+			if (value == NULL)
+			{
+				appendStringInfoString(buf, "null");
+				PGSTAR_VERBOSE_LOG("api_tuple: attr=%s output function returned NULL", NameStr(attr->attname));
+			}
+			else
+			{
+				PGSTAR_VERBOSE_LOG("api_tuple: attr=%s type=%u",
+								   NameStr(attr->attname),
+								   atttypid);
+
+				/* Handle different types appropriately */
+				switch (atttypid)
 				{
-					/* escape_json() escapes special chars and adds surrounding quotes */
-					escape_json(buf, value);
+					case BOOLOID:
+						/* Boolean output is already "t" or "f", convert to JSON boolean */
+						if (value[0] == 't')
+							appendStringInfoString(buf, "true");
+						else
+							appendStringInfoString(buf, "false");
+						break;
+					case INT2OID:
+					case INT4OID:
+					case INT8OID:
+					case OIDOID:
+					case FLOAT4OID:
+					case FLOAT8OID:
+					case NUMERICOID:
+						/* Numeric types output is already valid JSON number */
+						appendStringInfoString(buf, value);
+						break;
+					case JSONOID:
+					case JSONBOID:
+						/* JSON/JSONB output is already valid JSON */
+						appendStringInfoString(buf, value);
+						break;
+					default:
+						/* String types: escape for JSON (adds quotes) */
+						escape_json(buf, value);
+						break;
 				}
-				break;
-		}
 
-		if (value)
-		{
-			PGSTAR_TRACK_FREE("api:tuple_value", value);
-			pfree(value);
+				pgstar_safe_pfree(value);
+			}
 		}
 	}
 	appendStringInfoChar(buf, '}');
@@ -201,7 +236,7 @@ pgstar_api_information_schema(int nseg, const char *segs[], PgstarResponse *resp
 		{
 			FlushErrorState();
 			if (json)
-				pfree(json);
+				pgstar_safe_pfree(json);
 			resp->status_code = 500;
 			resp->status_text = "Internal Server Error";
 			resp->content_type = "application/json";
@@ -226,7 +261,7 @@ pgstar_api_information_schema(int nseg, const char *segs[], PgstarResponse *resp
 		{
 			FlushErrorState();
 			if (json)
-				pfree(json);
+				pgstar_safe_pfree(json);
 			resp->status_code = 500;
 			resp->status_text = "Internal Server Error";
 			resp->content_type = "application/json";
@@ -304,7 +339,9 @@ pgstar_api_exec(const PgstarRequest *req, PgstarResponse *resp)
 	{
 		int			ret;
 		StringInfoData buf;
+		TupleDesc tupdesc;
 		uint64		rows;
+		uint64		i;
 
 		SetCurrentStatementStartTimestamp();
 		StartTransactionCommand();
@@ -329,13 +366,22 @@ pgstar_api_exec(const PgstarRequest *req, PgstarResponse *resp)
 
 		if (SPI_tuptable != NULL && rows > 0)
 		{
-			for (uint64 i = 0; i < rows; i++)
+			tupdesc = SPI_tuptable->tupdesc;
+			if (tupdesc == NULL)
+				ereport(ERROR,
+						(errmsg("pgstar: SPI_tuptable->tupdesc is NULL in api_exec")));
+
+			for (i = 0; i < rows; i++)
 			{
 				if (i > 0)
-					appendStringInfoString(&buf, ",");
+					appendStringInfoChar(&buf, ',');
 
-				pgstar_json_append_tuple(&buf, SPI_tuptable->tupdesc,
-										 SPI_tuptable->vals[i]);
+				if (SPI_tuptable->vals == NULL ||
+					SPI_tuptable->vals[i] == NULL)
+					ereport(ERROR,
+							(errmsg("pgstar: NULL tuple at index " UINT64_FORMAT " in api_exec", i)));
+
+				pgstar_json_append_tuple(&buf, tupdesc, SPI_tuptable->vals[i]);
 			}
 		}
 
@@ -345,7 +391,7 @@ pgstar_api_exec(const PgstarRequest *req, PgstarResponse *resp)
 		resp_json = pstrdup(buf.data);
 		MemoryContextSwitchTo(old_ctx);
 
-		pfree(buf.data);
+		pgstar_safe_pfree(buf.data);
 
 		SPI_finish();
 		PopActiveSnapshot();
@@ -357,23 +403,28 @@ pgstar_api_exec(const PgstarRequest *req, PgstarResponse *resp)
 		resp->body = resp_json;
 
 		if (used_dynamic && sql_dynamic.data)
-			pfree(sql_dynamic.data);
+			pgstar_safe_pfree(sql_dynamic.data);
 	}
 	PG_CATCH();
 	{
 		ErrorData  *edata = CopyErrorData();
-		
+		MemoryContext old_ctx;
+
 		FlushErrorState();
-		
-		/* Cleanup transaction */
-		if (IsTransactionState()) {
-			SPI_finish();
+
+		/* Cleanup transaction if still active */
+		if (IsTransactionState())
+		{
+			/* Best-effort cleanup; ignore errors from these. */
+			(void) SPI_finish();
 			PopActiveSnapshot();
 			AbortCurrentTransaction();
 		}
 
 		if (used_dynamic && sql_dynamic.data)
-			pfree(sql_dynamic.data);
+			pgstar_safe_pfree(sql_dynamic.data);
+
+		old_ctx = MemoryContextSwitchTo(caller_ctx);
 
 		if (edata)
 		{
@@ -398,6 +449,8 @@ pgstar_api_exec(const PgstarRequest *req, PgstarResponse *resp)
 			resp->content_type = "application/json";
 			resp->body = pstrdup("{\"errors\":[\"unknown\"],\"rows_affected\":0,\"result\":[]}\n");
 		}
+
+		MemoryContextSwitchTo(old_ctx);
 	}
 	PG_END_TRY();
 }
@@ -451,6 +504,9 @@ pgstar_api_generic_table(const PgstarRequest *req,
 	{
 		int			ret;
 		StringInfoData buf;
+		TupleDesc tupdesc;
+		uint64 tuple_count;
+		uint64 i;
 
 		SetCurrentStatementStartTimestamp();
 		StartTransactionCommand();
@@ -466,25 +522,57 @@ pgstar_api_generic_table(const PgstarRequest *req,
 			ereport(ERROR,
 					(errmsg("pgstar: generic table query failed: %d", ret)));
 
-		initStringInfo(&buf);
-		appendStringInfoString(&buf, "[");
+		/* Safety check: ensure SPI_tuptable is valid */
+		if (SPI_tuptable == NULL)
+			ereport(ERROR,
+					(errmsg("pgstar: SPI_tuptable is NULL after query")));
 
-		for (uint64 i = 0; i < SPI_processed; i++)
+		/* Capture tuple descriptor and tuple count immediately - they're valid until SPI_finish() */
+		tupdesc = SPI_tuptable->tupdesc;
+		tuple_count = SPI_processed;
+
+		if (tupdesc == NULL)
+			ereport(ERROR,
+					(errmsg("pgstar: SPI_tuptable->tupdesc is NULL after query")));
+
+		if (SPI_tuptable->vals == NULL)
+			ereport(ERROR,
+					(errmsg("pgstar: SPI_tuptable->vals is NULL after query")));
+
+		/* Initialize StringInfo buffer - ensure it's in the transaction memory context */
+		initStringInfo(&buf);
+		if (buf.data == NULL)
+			ereport(ERROR,
+					(errmsg("pgstar: StringInfo initialization failed")));
+		
+		appendStringInfoChar(&buf, '[');
+
+		for (i = 0; i < tuple_count; i++)
 		{
 			if (i > 0)
-				appendStringInfoString(&buf, ",");
+				appendStringInfoChar(&buf, ',');
 
-			pgstar_json_append_tuple(&buf, SPI_tuptable->tupdesc,
-									 SPI_tuptable->vals[i]);
+			if (i >= (uint64) SPI_tuptable->numvals)
+				ereport(ERROR,
+						(errmsg("pgstar: invalid tuple index " UINT64_FORMAT
+								" (numvals=%d)",
+								i, (int) SPI_tuptable->numvals)));
+
+			if (SPI_tuptable->vals[i] == NULL)
+				ereport(ERROR,
+						(errmsg("pgstar: tuple at index " UINT64_FORMAT " is NULL", i)));
+
+			pgstar_json_append_tuple(&buf, tupdesc, SPI_tuptable->vals[i]);
 		}
 
-		appendStringInfoString(&buf, "]\n");
+		appendStringInfoChar(&buf, ']');
+		appendStringInfoChar(&buf, '\n');
 
 		old_ctx = MemoryContextSwitchTo(caller_ctx);
 		resp_json = pstrdup(buf.data);
 		MemoryContextSwitchTo(old_ctx);
 
-		pfree(buf.data);
+		pgstar_safe_pfree(buf.data);
 
 		SPI_finish();
 		PopActiveSnapshot();
@@ -538,9 +626,9 @@ pgstar_api_generic_table(const PgstarRequest *req,
 	PG_END_TRY();
 
 	if (select_list.data)
-		pfree(select_list.data);
+		pgstar_safe_pfree(select_list.data);
 	if (sql.data)
-		pfree(sql.data);
+		pgstar_safe_pfree(sql.data);
 }
 
 static void
@@ -554,7 +642,7 @@ pgstar_api_build_select_list(const char *query, StringInfo select_list)
 
 	p = buf;
 
-	initStringInfo(select_list);
+	/* select_list is already initialized by caller */
 	while (*p)
 	{
 		char	ch = *p++;

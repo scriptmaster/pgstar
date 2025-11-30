@@ -1,5 +1,6 @@
 #include "postgres.h"
 
+#include "pgstar.h"
 #include "pages_layout.h"
 
 #include "lib/stringinfo.h"
@@ -60,6 +61,6 @@ pgstar_ui_append_css_links(StringInfo head, const char *css_names)
 		}
 	}
 
-	pfree(work);
+	pgstar_safe_pfree(work);
 }
 

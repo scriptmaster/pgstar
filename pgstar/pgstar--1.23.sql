@@ -663,7 +663,7 @@ VALUES (
 ',
   'text/html; charset=utf-8',
   '[]'::jsonb,
-  'https://cdnjs.cloudflare.com/ajax/libs/vue/3.5.22/vue.global.prod.min.js,vue-data-table.js',
+  'https://cdnjs.cloudflare.com/ajax/libs/vue/3.5.22/vue.global.prod.min.js,https://emeraldcss-deno.scriptmaster.deno.net/vue-data-table.js',
   '',
   FALSE
 )

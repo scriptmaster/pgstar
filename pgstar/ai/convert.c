@@ -110,9 +110,9 @@ pgstar_route_v1_models_convert(const PgstarRequest *req, PgstarResponse *resp)
 		resp->body = json_resp.data;
 
 		if (param_file)
-			pfree(param_file);
+			pgstar_safe_pfree(param_file);
 		if (bin_file)
-			pfree(bin_file);
+			pgstar_safe_pfree(bin_file);
 	}
 	else
 	{
@@ -124,7 +124,7 @@ pgstar_route_v1_models_convert(const PgstarRequest *req, PgstarResponse *resp)
 		resp->body = json_resp.data;
 
 		if (error_msg)
-			pfree(error_msg);
+			pgstar_safe_pfree(error_msg);
 	}
 }
 
@@ -149,13 +149,13 @@ pgstar_convert_onnx_to_ncnn(const char *model_id, const char *model_name,
 		
 		mkdir_status = system(mkdir_cmd);
 		(void) mkdir_status;  /* Suppress unused result warning */
-		pfree(mkdir_cmd);
+		pgstar_safe_pfree(mkdir_cmd);
 		
 		work_dir = tmp_dir;
 		if (mkdir(work_dir, 0755) != 0)
 		{
 			*error_msg = psprintf("Failed to create work directory: %s", strerror(errno));
-			pfree(work_dir);
+			pgstar_safe_pfree(work_dir);
 			return false;
 		}
 	}
@@ -204,10 +204,10 @@ pgstar_convert_onnx_to_ncnn(const char *model_id, const char *model_name,
 			if (!pgstar_download_hf_file(model_id, "model.onnx", onnx_file))
 			{
 				*error_msg = psprintf("Failed to download ONNX model from Hugging Face: %s", model_id);
-				pfree(work_dir);
-				pfree(onnx_file);
-				pfree(onnx_filename);
-				pfree(sanitized_name);
+				pgstar_safe_pfree(work_dir);
+				pgstar_safe_pfree(onnx_file);
+				pgstar_safe_pfree(onnx_filename);
+				pgstar_safe_pfree(sanitized_name);
 				return false;
 			}
 		}
@@ -223,11 +223,11 @@ pgstar_convert_onnx_to_ncnn(const char *model_id, const char *model_name,
 			{
 				elog(pgstar_log_level, "pgstar: saved ONNX model to %s", onnx_filename);
 			}
-			pfree(copy_onnx_cmd);
+			pgstar_safe_pfree(copy_onnx_cmd);
 		}
 		
-		pfree(onnx_filename);
-		pfree(sanitized_name);
+		pgstar_safe_pfree(onnx_filename);
+		pgstar_safe_pfree(sanitized_name);
 	}
 
 	/* Check if pnnx is available */
@@ -246,8 +246,8 @@ pgstar_convert_onnx_to_ncnn(const char *model_id, const char *model_name,
 	else
 	{
 		*error_msg = psprintf("pnnx not found. Please install pnnx at /usr/local/bin/pnnx or ensure it's in PATH");
-		pfree(work_dir);
-		pfree(onnx_file);
+		pgstar_safe_pfree(work_dir);
+		pgstar_safe_pfree(onnx_file);
 		return false;
 	}
 
@@ -259,17 +259,17 @@ pgstar_convert_onnx_to_ncnn(const char *model_id, const char *model_name,
 		{
 			/* Child process */
 			execl("/bin/sh", "sh", "-c", cmd_str, (char *) NULL);
-			pfree(cmd_str);
+			pgstar_safe_pfree(cmd_str);
 			_exit(1);
 		}
-		pfree(cmd_str);
+		pgstar_safe_pfree(cmd_str);
 	}
 	
 	if (pid < 0)
 	{
 		*error_msg = psprintf("Failed to fork process: %s", strerror(errno));
-		pfree(work_dir);
-		pfree(onnx_file);
+		pgstar_safe_pfree(work_dir);
+		pgstar_safe_pfree(onnx_file);
 		return false;
 	}
 	else
@@ -278,16 +278,16 @@ pgstar_convert_onnx_to_ncnn(const char *model_id, const char *model_name,
 		if (waitpid(pid, &status, 0) == -1)
 		{
 			*error_msg = psprintf("Failed to wait for conversion: %s", strerror(errno));
-			pfree(work_dir);
-			pfree(onnx_file);
+			pgstar_safe_pfree(work_dir);
+			pgstar_safe_pfree(onnx_file);
 			return false;
 		}
 
 		if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
 		{
 			*error_msg = psprintf("pnnx conversion failed with exit code %d", WEXITSTATUS(status));
-			pfree(work_dir);
-			pfree(onnx_file);
+			pgstar_safe_pfree(work_dir);
+			pgstar_safe_pfree(onnx_file);
 			return false;
 		}
 	}
@@ -299,10 +299,10 @@ pgstar_convert_onnx_to_ncnn(const char *model_id, const char *model_name,
 	if (stat(param_path, &st) != 0 || stat(bin_path, &st) != 0)
 	{
 		*error_msg = "Conversion completed but output files not found";
-		pfree(work_dir);
-		pfree(onnx_file);
-		pfree(param_path);
-		pfree(bin_path);
+		pgstar_safe_pfree(work_dir);
+		pgstar_safe_pfree(onnx_file);
+		pgstar_safe_pfree(param_path);
+		pgstar_safe_pfree(bin_path);
 		return false;
 	}
 
@@ -314,7 +314,7 @@ pgstar_convert_onnx_to_ncnn(const char *model_id, const char *model_name,
 		mkdir_cmd = psprintf("mkdir -p /opt/pgstar/models");
 		mkdir_status = system(mkdir_cmd);
 		(void) mkdir_status;  /* Suppress unused result warning */
-		pfree(mkdir_cmd);
+		pgstar_safe_pfree(mkdir_cmd);
 	}
 
 	/* Extract model name from model_id for final filenames */
@@ -346,7 +346,7 @@ pgstar_convert_onnx_to_ncnn(const char *model_id, const char *model_name,
 		*param_file = psprintf("/opt/pgstar/models/pgstar_model_%s.param", sanitized_final);
 		*bin_file = psprintf("/opt/pgstar/models/pgstar_model_%s.bin", sanitized_final);
 		
-		pfree(sanitized_final);
+		pgstar_safe_pfree(sanitized_final);
 	}
 
 	/* Simple copy using system command (could be improved) */
@@ -359,20 +359,20 @@ pgstar_convert_onnx_to_ncnn(const char *model_id, const char *model_name,
 		if (copy_status != 0)
 		{
 			*error_msg = "Failed to copy converted files";
-			pfree(work_dir);
-			pfree(onnx_file);
-			pfree(param_path);
-			pfree(bin_path);
-			pfree(copy_cmd);
+			pgstar_safe_pfree(work_dir);
+			pgstar_safe_pfree(onnx_file);
+			pgstar_safe_pfree(param_path);
+			pgstar_safe_pfree(bin_path);
+			pgstar_safe_pfree(copy_cmd);
 			return false;
 		}
-		pfree(copy_cmd);
+		pgstar_safe_pfree(copy_cmd);
 	}
 
-	pfree(work_dir);
-	pfree(onnx_file);
-	pfree(param_path);
-	pfree(bin_path);
+	pgstar_safe_pfree(work_dir);
+	pgstar_safe_pfree(onnx_file);
+	pgstar_safe_pfree(param_path);
+	pgstar_safe_pfree(bin_path);
 
 	return true;
 }

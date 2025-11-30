@@ -241,7 +241,7 @@ pgstar_ensure_default_user(void)
 
 	pgstar_execute_sql(sql);
 
-	pfree(sql);
-	pfree(username);
+	pgstar_safe_pfree(sql);
+	pgstar_safe_pfree(username);
 }
 

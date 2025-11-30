@@ -44,7 +44,7 @@ static const PgstarAssetSeedUrl pgstar_asset_seed_urls[] = {
 	{"favicon.ico", "https://emeraldai.cloud/favicon.ico"}
 };
 
-static const bool pgstar_downloads_enabled = false;
+static const bool pgstar_downloads_enabled = true;
 
 static bool pgstar_ui_cache_get(const char *key, char **body, size_t *body_len, const char **content_type);
 static void pgstar_ui_cache_put(const char *key, const char *body, size_t body_len, const char *content_type);
@@ -200,7 +200,6 @@ pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 		 (void *)body, (void *)content_type);
 
 	{
-		bool		content_type_allocated; /* Assume allocated by pgstar_ui_render_page */
 		char	   *body_cache;
 		size_t		blen;
 
@@ -214,13 +213,10 @@ pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 			return;
 		}
 
-		content_type_allocated = true; /* Assume allocated by pgstar_ui_render_page */
-
 		if (content_type == NULL)
 		{
 			elog(WARNING, "pgstar: UI render_page returned NULL content_type for '%s'", page_name);
 			content_type = pstrdup("text/html; charset=utf-8");
-			content_type_allocated = true; /* We allocated it */
 		}
 
 		elog(pgstar_log_level, "pgstar: UI cache PUT for page '%s' (key: %s), body_len=%zu, content_type='%s'", 
@@ -228,10 +224,8 @@ pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 
 		body_cache = pstrdup(body); // this copy is for the cache
 		blen = body ? strlen(body) : 0;
-		PGSTAR_TRACK_ALLOC("ui:body_cache_tmp", body_cache, blen + 1);
 
 		pgstar_ui_cache_put(cache_key, body_cache, blen, content_type);
-		PGSTAR_TRACK_FREE("ui:body_cache_tmp", body_cache);
 		pgstar_safe_pfree(body_cache);
 		elog(pgstar_log_level, "pgstar: UI cache PUT completed");
 
@@ -239,10 +233,6 @@ pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 		resp->status_text = "OK";
 		resp->content_type = pstrdup(content_type);
 		resp->body = pstrdup(body);
-
-		if (content_type_allocated) {
-			pgstar_safe_pfree((void *) content_type);
-		}
 	}
 
 	/* Note: We don't free 'body' or 'content_type' here because:
@@ -623,7 +613,6 @@ pgstar_ui_cache_put(const char *key, const char *body, size_t body_len, const ch
 	elog(pgstar_log_level, "pgstar: cache_put: freeing old body if exists");
 	if (pgstar_ui_cache[slot].body)
 	{
-		PGSTAR_TRACK_FREE("ui:cache_entry_body", pgstar_ui_cache[slot].body);
 		pgstar_safe_pfree(pgstar_ui_cache[slot].body);
 	}
 
@@ -632,7 +621,6 @@ pgstar_ui_cache_put(const char *key, const char *body, size_t body_len, const ch
 	pgstar_ui_cache[slot].body = (char *) palloc(body_len + 1);
 	memcpy(pgstar_ui_cache[slot].body, body, body_len);
 	pgstar_ui_cache[slot].body[body_len] = '\0'; /* Ensure null-termination */
-	PGSTAR_TRACK_ALLOC("ui:cache_entry_body", pgstar_ui_cache[slot].body, body_len + 1);
 	
 	pgstar_ui_cache[slot].body_len = body_len;
 
@@ -707,8 +695,8 @@ pgstar_ui_mark_redownload(const char *file_name, const char *reason)
 			"WHERE file_name = $2",
 			2, argtypes, values, nulls, false, 0);
 
-		pfree(DatumGetPointer(values[0]));
-		pfree(DatumGetPointer(values[1]));
+		pgstar_safe_pfree(DatumGetPointer(values[0]));
+		pgstar_safe_pfree(DatumGetPointer(values[1]));
 
 		SPI_finish();
 		PopActiveSnapshot();
@@ -828,6 +816,8 @@ pgstar_ui_render_page(const char *page_name, const char *title_override, char **
 	StringInfoData buf;
 	int			ret;
 	bool		found = false;
+	MemoryContext caller_ctx = CurrentMemoryContext;
+	MemoryContext old_ctx;
 
 	SetCurrentStatementStartTimestamp();
 	StartTransactionCommand();
@@ -875,28 +865,53 @@ pgstar_ui_render_page(const char *page_name, const char *title_override, char **
 		{
 			HeapTuple	tup = SPI_tuptable->vals[0];
 			TupleDesc	tupdesc = SPI_tuptable->tupdesc;
-			char	   *parent_tag;
-			char	   *html_fragment;
-			char	   *ct;
+			char	   *parent_tag_raw;
+			char	   *html_fragment_raw;
+			char	   *ct_raw;
+			char	   *parent_tag = NULL;
+			char	   *html_fragment = NULL;
+			char	   *ct = NULL;
 			Datum		meta_datum;
 			bool		isnull;
 			Jsonb	   *meta = NULL;
-			char	   *js_names;
-			char	   *css_names;
+			char	   *js_names_raw;
+			char	   *css_names_raw;
+			char	   *js_names = NULL;
+			char	   *css_names = NULL;
 
-			parent_tag = SPI_getvalue(tup, tupdesc, 1);
-			html_fragment = SPI_getvalue(tup, tupdesc, 2);
-			ct = SPI_getvalue(tup, tupdesc, 3);
+			/* CRITICAL: Copy all SPI_getvalue() results immediately - they're only valid until SPI_finish() */
+			parent_tag_raw = SPI_getvalue(tup, tupdesc, 1);
+			if (parent_tag_raw != NULL)
+				parent_tag = pstrdup(parent_tag_raw);
 
+			html_fragment_raw = SPI_getvalue(tup, tupdesc, 2);
+			if (html_fragment_raw != NULL)
+				html_fragment = pstrdup(html_fragment_raw);
+
+			ct_raw = SPI_getvalue(tup, tupdesc, 3);
+			if (ct_raw != NULL)
+				ct = pstrdup(ct_raw);
+			else
+				ct = pstrdup("text/html; charset=utf-8");
+
+			/* For JSONB, we need to copy the datum properly */
 			meta_datum = SPI_getbinval(tup, tupdesc, 4, &isnull);
 			if (!isnull)
-				meta = DatumGetJsonbP(meta_datum);
+			{
+				/* Copy JSONB datum - DatumGetJsonbP returns a pointer that needs to be copied */
+				Jsonb *meta_raw = DatumGetJsonbP(meta_datum);
+				/* Create a copy in current memory context */
+				meta = (Jsonb *) palloc(VARSIZE(meta_raw));
+				memcpy(meta, meta_raw, VARSIZE(meta_raw));
+			}
 
-			js_names = SPI_getvalue(tup, tupdesc, 5);
-			css_names = SPI_getvalue(tup, tupdesc, 6);
+			js_names_raw = SPI_getvalue(tup, tupdesc, 5);
+			if (js_names_raw != NULL)
+				js_names = pstrdup(js_names_raw);
 
-			if (ct == NULL)
-				ct = pstrdup("text/html; charset=utf-8");
+			css_names_raw = SPI_getvalue(tup, tupdesc, 6);
+			if (css_names_raw != NULL)
+				css_names = pstrdup(css_names_raw);
 
 			initStringInfo(&buf);
 			pgstar_ui_build_html_page(page_name,
@@ -908,13 +923,20 @@ pgstar_ui_render_page(const char *page_name, const char *title_override, char **
 									  title_override,
 									  &buf);
 
-			/* Copy buf.data before SPI_finish() and CommitTransactionCommand() 
-			 * reset the memory context. The caller will own this copy. */
-			*body = pstrdup(buf.data);
-			*content_type = pstrdup(ct);
-			
-			/* Free the StringInfo buffer since we've copied its data */
-			/* pfree(buf.data); -- Let request_context clean this up to avoid potential double-free issues */
+			/* Copy into caller's memory context BEFORE cleaning up transaction */
+			old_ctx = MemoryContextSwitchTo(caller_ctx);
+
+			if (buf.data)
+				*body = pstrdup(buf.data);
+			else
+				*body = pstrdup("");
+
+			if (ct)
+				*content_type = pstrdup(ct);
+			else
+				*content_type = pstrdup("text/html; charset=utf-8");
+
+			MemoryContextSwitchTo(old_ctx);
 			
 			found = true;
 		}
@@ -993,7 +1015,7 @@ pgstar_ui_fetch_file(const char *file_name,
 			
 			ret = SPI_execute_with_args(query_buf.data, 1, argtypes, values, NULL, true, 1);
 			
-			pfree(query_buf.data);
+			pgstar_safe_pfree(query_buf.data);
 		}
 
 		if (ret != SPI_OK_SELECT)
@@ -1023,7 +1045,7 @@ pgstar_ui_fetch_file(const char *file_name,
 					appendStringInfo(&debug_buf, "'%s', ", fn ? fn : "NULL");
 				}
 				elog(pgstar_log_level, "%s", debug_buf.data);
-				pfree(debug_buf.data);
+				pgstar_safe_pfree(debug_buf.data);
 			}
 		}
 		else if (SPI_processed == 1)
@@ -1160,7 +1182,7 @@ pgstar_ui_fetch_file(const char *file_name,
 						if (upd_ret != SPI_OK_UPDATE)
 							elog(WARNING, "pgstar: failed to update pgstar.files after download: %d", upd_ret);
 
-						pfree(downloaded_body);
+						pgstar_safe_pfree(downloaded_body);
 					}
 					else
 					{

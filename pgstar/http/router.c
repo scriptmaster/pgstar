@@ -96,12 +96,10 @@ pgstar_route_request(const PgstarRequest *req, PgstarResponse *resp)
 			resp->status_code = 405;
 			resp->status_text = "Method Not Allowed";
 			resp->content_type = "application/json";
-			resp->body = pstrdup("{\"error\":\"method not allowed\"}\n");
+			resp->body = pstrdup("{\"error\":\"POST not allowed on /static/\"}\n");
+			return;
 		}
-		else
-		{
-			pgstar_route_static(req, resp);
-		}
+		pgstar_route_static(req, resp);
 		return;
 	}
 	else

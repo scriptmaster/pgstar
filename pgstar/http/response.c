@@ -82,9 +82,9 @@ pgstar_http_send_json(int client_fd, int status_code,
 
     pgstar_http_send_response(client_fd, &resp);
     if (resp.body)
-        pfree(resp.body);
+        pgstar_safe_pfree(resp.body);
     if (resp.log)
-        pfree(resp.log);
+        pgstar_safe_pfree(resp.log);
 }
 
 void
@@ -112,9 +112,9 @@ pgstar_http_send_500(int client_fd, const char *msg)
     resp.body         = buf.data;
 
     pgstar_http_send_response(client_fd, &resp);
-    pfree(buf.data);
+    pgstar_safe_pfree(buf.data);
     if (resp.log)
-        pfree(resp.log);
+        pgstar_safe_pfree(resp.log);
 }
 
 void
@@ -132,7 +132,7 @@ pgstar_http_send_html_response(int client_fd, int status_code,
 
     pgstar_http_send_response(client_fd, &resp);
     if (resp.body)
-        pfree(resp.body);
+        pgstar_safe_pfree(resp.body);
 }
 
 void
@@ -157,5 +157,5 @@ pgstar_http_send_html_file(int client_fd, const char *filepath)
     FreeFile(file);
 
     pgstar_http_send_html_response(client_fd, 200, "OK", buf.data);
-    pfree(buf.data);
+    pgstar_safe_pfree(buf.data);
 }

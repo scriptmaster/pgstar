@@ -43,16 +43,21 @@ pgstar_json_schemata(void)
     {
         HeapTuple   tup = SPI_tuptable->vals[i];
         TupleDesc   tupdesc = SPI_tuptable->tupdesc;
+        char       *schema_name_raw;
         char       *schema_name;
 
-        schema_name = SPI_getvalue(tup, tupdesc, 1);
-        if (!schema_name)
+        /* CRITICAL: Copy SPI_getvalue() result immediately - it's only valid until SPI_finish() */
+        schema_name_raw = SPI_getvalue(tup, tupdesc, 1);
+        if (schema_name_raw != NULL)
+            schema_name = pstrdup(schema_name_raw);
+        else
             schema_name = "";
 
         if (i > 0)
             appendStringInfoString(&buf, ",");
 
         appendStringInfo(&buf, "\"%s\"", schema_name);
+        /* Note: schema_name will be automatically freed when transaction context is reset */
     }
 
     appendStringInfoString(&buf, "]\n");
@@ -104,14 +109,23 @@ pgstar_json_tables(void)
     {
         HeapTuple   tup = SPI_tuptable->vals[i];
         TupleDesc   tupdesc = SPI_tuptable->tupdesc;
+        char       *schema_name_raw;
+        char       *table_name_raw;
         char       *schema_name;
         char       *table_name;
 
-        schema_name = SPI_getvalue(tup, tupdesc, 1);
-        table_name  = SPI_getvalue(tup, tupdesc, 2);
+        /* CRITICAL: Copy SPI_getvalue() results immediately - they're only valid until SPI_finish() */
+        schema_name_raw = SPI_getvalue(tup, tupdesc, 1);
+        if (schema_name_raw != NULL)
+            schema_name = pstrdup(schema_name_raw);
+        else
+            schema_name = "";
 
-        if (!schema_name) schema_name = "";
-        if (!table_name)  table_name  = "";
+        table_name_raw = SPI_getvalue(tup, tupdesc, 2);
+        if (table_name_raw != NULL)
+            table_name = pstrdup(table_name_raw);
+        else
+            table_name = "";
 
         if (i > 0)
             appendStringInfoString(&buf, ",");
@@ -119,6 +133,7 @@ pgstar_json_tables(void)
         appendStringInfo(&buf,
                          "{\"table_schema\":\"%s\",\"table_name\":\"%s\"}",
                          schema_name, table_name);
+        /* Note: schema_name and table_name will be automatically freed when transaction context is reset */
     }
 
     appendStringInfoString(&buf, "],\"columns\":[\"table_schema\",\"table_name\"]}\n");
