@@ -11,6 +11,7 @@
 
 static char pgstar_port[32] = "";
 static bool pgstar_env_loaded = false;
+static bool pgstar_verbose = true;
 static const int PGSTAR_DEFAULT_PORT = 5480;
 
 static void pgstar_trim(char *str);
@@ -41,7 +42,7 @@ pgstar_load_env(void)
 	FILE	   *file;
 	char		line[256];
 	const char *env_path;
-	const char *fallback_paths[] = {".env", "/etc/pgstar/.env"};
+	const char *fallback_paths[] = {"/etc/pgstar/.env"};
 	int			i;
 
 	if (pgstar_env_loaded)
@@ -115,7 +116,22 @@ pgstar_load_env(void)
 		if (strcmp(cursor, "PGSTAR_PORT") == 0 || strcmp(cursor, "PORT") == 0)
 		{
 			snprintf(pgstar_port, sizeof(pgstar_port), "%s", equals);
-			break;
+			continue;
+		}
+		if (pg_strcasecmp(cursor, "VERBOSE") == 0)
+		{
+			if (pg_strcasecmp(equals, "1") == 0 ||
+				pg_strcasecmp(equals, "true") == 0 ||
+				pg_strcasecmp(equals, "on") == 0 ||
+				pg_strcasecmp(equals, "yes") == 0)
+				pgstar_verbose = true;
+			else if (pg_strcasecmp(equals, "0") == 0 ||
+					 pg_strcasecmp(equals, "false") == 0 ||
+					 pg_strcasecmp(equals, "off") == 0 ||
+					 pg_strcasecmp(equals, "no") == 0)
+				pgstar_verbose = false;
+
+			continue;
 		}
 	}
 
@@ -148,5 +164,14 @@ pgstar_env_port(void)
 		return PGSTAR_DEFAULT_PORT;
 
 	return (int) port;
+}
+
+bool
+pgstar_env_verbose(void)
+{
+	if (!pgstar_env_loaded)
+		pgstar_load_env();
+
+	return pgstar_verbose;
 }
 

@@ -10,6 +10,7 @@
 #include "utils/jsonb.h"
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
+#include "utils/varlena.h"
 #include "core/spi.h"
 
 #include <ctype.h>
@@ -30,12 +31,27 @@ typedef struct PgstarUiCacheEntry
 
 static PgstarUiCacheEntry pgstar_ui_cache[16];
 
+typedef struct PgstarAssetSeedUrl
+{
+	const char *file_name;
+	const char *url;
+} PgstarAssetSeedUrl;
+
+static const PgstarAssetSeedUrl pgstar_asset_seed_urls[] = {
+	{"js/vue.global.prod.min.js", "https://cdnjs.cloudflare.com/ajax/libs/vue/3.5.22/vue.global.prod.min.js"},
+	{"favicon.ico", "https://emeraldai.cloud/favicon.ico"}
+};
+
+static const bool pgstar_downloads_enabled = false;
+
 static bool pgstar_ui_cache_get(const char *key, char **body, size_t *body_len, const char **content_type);
 static void pgstar_ui_cache_put(const char *key, const char *body, size_t body_len, const char *content_type);
 
 static bool pgstar_ui_render_page(const char *page_name, const char *title_override, char **body, const char **content_type);
 bool pgstar_ui_fetch_file(const char *file_name,
 								  char **body, size_t *body_len, const char **content_type);
+static const char *pgstar_ui_seed_url(const char *file_name);
+static void pgstar_ui_mark_redownload(const char *file_name, const char *reason);
 
 /*
  * Public API: ensure pgstar.pages exists and seed built-in rows.
@@ -205,11 +221,13 @@ pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 		elog(pgstar_log_level, "pgstar: UI cache PUT for page '%s' (key: %s), body_len=%zu, content_type='%s'", 
 			 page_name, cache_key, body ? strlen(body) : 0, content_type ? content_type : "(null)");
 
-		body_cache = pstrdup(body); // this copy is for the cache and freed later.
+		body_cache = pstrdup(body); // this copy is for the cache
 		blen = body ? strlen(body) : 0;
-		// elog(pgstar_log_level, "pgstar: UI cache PUT: body_copy created at %p", (void *)body_cache);
+		PGSTAR_TRACK_ALLOC("ui:body_cache_tmp", body_cache, blen + 1);
 
 		pgstar_ui_cache_put(cache_key, body_cache, blen, content_type);
+		PGSTAR_TRACK_FREE("ui:body_cache_tmp", body_cache);
+		pgstar_safe_pfree(body_cache);
 		elog(pgstar_log_level, "pgstar: UI cache PUT completed");
 
 		resp->status_code = 200;
@@ -600,6 +618,7 @@ pgstar_ui_cache_put(const char *key, const char *body, size_t body_len, const ch
 	elog(pgstar_log_level, "pgstar: cache_put: freeing old body if exists");
 	if (pgstar_ui_cache[slot].body)
 	{
+		PGSTAR_TRACK_FREE("ui:cache_entry_body", pgstar_ui_cache[slot].body);
 		pgstar_safe_pfree(pgstar_ui_cache[slot].body);
 	}
 
@@ -608,6 +627,7 @@ pgstar_ui_cache_put(const char *key, const char *body, size_t body_len, const ch
 	pgstar_ui_cache[slot].body = (char *) palloc(body_len + 1);
 	memcpy(pgstar_ui_cache[slot].body, body, body_len);
 	pgstar_ui_cache[slot].body[body_len] = '\0'; /* Ensure null-termination */
+	PGSTAR_TRACK_ALLOC("ui:cache_entry_body", pgstar_ui_cache[slot].body, body_len + 1);
 	
 	pgstar_ui_cache[slot].body_len = body_len;
 
@@ -621,6 +641,97 @@ pgstar_ui_cache_put(const char *key, const char *body, size_t body_len, const ch
 	MemoryContextSwitchTo(old_ctx);
 	
 	elog(pgstar_log_level, "pgstar: cache_put: completed successfully");
+}
+
+static const char *
+pgstar_ui_seed_url(const char *file_name)
+{
+	if (file_name == NULL)
+		return NULL;
+
+	for (size_t i = 0; i < lengthof(pgstar_asset_seed_urls); i++)
+	{
+		if (strcmp(pgstar_asset_seed_urls[i].file_name, file_name) == 0)
+			return pgstar_asset_seed_urls[i].url;
+	}
+
+	return NULL;
+}
+
+static void
+pgstar_ui_mark_redownload(const char *file_name, const char *reason)
+{
+	const char *seed_url = pgstar_ui_seed_url(file_name);
+	Oid			argtypes[2];
+	Datum		values[2];
+	char		nulls[2] = {' ', ' '};
+	bool		need_cleanup = false;
+
+	if (file_name == NULL)
+		return;
+
+	if (seed_url == NULL)
+	{
+		elog(WARNING, "pgstar: unable to reset '%s' for re-download (no seed URL known)", file_name);
+		return;
+	}
+
+	PG_TRY();
+	{
+		SetCurrentStatementStartTimestamp();
+		StartTransactionCommand();
+		PushActiveSnapshot(GetTransactionSnapshot());
+		need_cleanup = true;
+
+		if (SPI_connect() != SPI_OK_CONNECT)
+			ereport(ERROR,
+					(errmsg("pgstar ui: SPI_connect failed during redownload reset")));
+
+		argtypes[0] = TEXTOID; /* text_data */
+		argtypes[1] = TEXTOID; /* file_name */
+		values[0] = CStringGetTextDatum(seed_url);
+		values[1] = CStringGetTextDatum(file_name);
+
+		SPI_execute_with_args(
+			"UPDATE pgstar.files "
+			"SET text_data = $1, "
+			"    binary_data = NULL, "
+			"    is_binary = FALSE, "
+			"    is_download = TRUE, "
+			"    updated_at = now() "
+			"WHERE file_name = $2",
+			2, argtypes, values, nulls, false, 0);
+
+		pfree(DatumGetPointer(values[0]));
+		pfree(DatumGetPointer(values[1]));
+
+		SPI_finish();
+		PopActiveSnapshot();
+		CommitTransactionCommand();
+		need_cleanup = false;
+
+		elog(pgstar_log_level,
+			 "pgstar: reset '%s' to lazy download mode (reason: %s)",
+			 file_name,
+			 reason ? reason : "unknown");
+	}
+	PG_CATCH();
+	{
+		FlushErrorState();
+
+		if (need_cleanup && IsTransactionState())
+		{
+			SPI_finish();
+			PopActiveSnapshot();
+			AbortCurrentTransaction();
+		}
+
+		elog(WARNING,
+			 "pgstar: failed to reset '%s' for re-download (reason: %s)",
+			 file_name,
+			 reason ? reason : "unknown");
+	}
+	PG_END_TRY();
 }
 
 /* -------------------------------------------------------------------------
@@ -755,6 +866,7 @@ pgstar_ui_fetch_file(const char *file_name,
 {
 	int			ret;
 	bool		found = false;
+	bool		success = false;
 	MemoryContext oldcontext;
 
 	/* Save caller's memory context - we'll allocate return values in it */
@@ -768,6 +880,8 @@ pgstar_ui_fetch_file(const char *file_name,
 	if (ret != SPI_OK_CONNECT)
 		ereport(ERROR,
 				(errmsg("pgstar ui: SPI_connect failed: %d", ret)));
+
+	PGSTAR_VERBOSE_LOG("ui_fetch_file[%s]: entry", file_name ? file_name : "(null)");
 
 	PG_TRY();
 	{
@@ -854,19 +968,8 @@ pgstar_ui_fetch_file(const char *file_name,
 			binary_datum = SPI_getbinval(tup, tupdesc, 2, &isnull);
 			if (!isnull)
 			{
-				/* Detoast if necessary. DatumGetByteaP ensures we get a flat, non-compressed varlena. */
-				/* We don't need to copy binary_data immediately unless we use it after UPDATE.
-				 * But to be safe, we'll extract it later or rely on the fact we only use it
-				 * if we DON'T do the download/update path, or if we re-fetch.
-				 * Actually, let's just hold the Datum, but remember we can't touch the Tuple 
-				 * after another SPI call.
-				 * Wait, DatumGetByteaP returns a pointer to palloc'd memory (if it was detoasted)
-				 * OR a pointer into the tuple buffer (if it wasn't).
-				 * To be safe, we should assume it might be invalidated. 
-				 * However, binary_data is only used in the read path.
-				 * If we download, we overwrite binary_data with new data.
-				 */
-				binary_data = DatumGetByteaP(binary_datum);
+				/* Always take an owned copy so later SPI operations can't invalidate it */
+				binary_data = (bytea *) PG_DETOAST_DATUM_COPY(binary_datum);
 			}
 			else
 			{
@@ -886,8 +989,28 @@ pgstar_ui_fetch_file(const char *file_name,
 			if (!isnull)
 				is_download = DatumGetBool(is_download_datum);
 
+			PGSTAR_VERBOSE_LOG("ui_fetch_file[%s]: row found is_binary=%d is_download=%d",
+							   file_name ? file_name : "(null)",
+							   is_binary ? 1 : 0,
+							   is_download ? 1 : 0);
+
 			/* Handle download if requested and text_data is a URL */
-			if (is_download && text_data != NULL && (strncmp(text_data, "http://", 7) == 0 || strncmp(text_data, "https://", 8) == 0))
+			if (is_download && text_data != NULL && !pgstar_downloads_enabled)
+			{
+				char	   *placeholder = psprintf("/* download disabled: %s (%s) */\n",
+												   file_name ? file_name : "(unknown)",
+												   text_data);
+
+				PGSTAR_VERBOSE_LOG("ui_fetch_file[%s]: download disabled, serving placeholder for %s",
+								   file_name ? file_name : "(null)",
+								   text_data);
+
+				text_data = placeholder;
+				is_binary = false;
+				is_download = false;
+			}
+			else if (is_download && text_data != NULL &&
+					 (strncmp(text_data, "http://", 7) == 0 || strncmp(text_data, "https://", 8) == 0))
 			{
 				size_t downloaded_len = 0;
 				char *downloaded_ct = NULL;
@@ -1039,7 +1162,19 @@ pgstar_ui_fetch_file(const char *file_name,
 			if (is_binary && binary_data != NULL)
 			{
 				/* Extract binary data while still in transaction context */
-				source_len = VARSIZE(binary_data) - VARHDRSZ;
+				Size raw_size = VARSIZE(binary_data);
+
+				PGSTAR_VERBOSE_LOG("ui_fetch_file[%s]: binary VARSIZE=%zu",
+								   file_name ? file_name : "(null)",
+								   (Size) raw_size);
+
+				if (raw_size <= VARHDRSZ)
+					ereport(ERROR,
+							(errmsg("pgstar: invalid binary length (%zu) for '%s'",
+									(size_t) raw_size,
+									file_name ? file_name : "(null)")));
+
+				source_len = raw_size - VARHDRSZ;
 				{
 					char *bin_data = VARDATA(binary_data);
 					temp_body = (char *) palloc(source_len);
@@ -1098,15 +1233,24 @@ pgstar_ui_fetch_file(const char *file_name,
 				pgstar_safe_pfree(ct);
 			
 			found = true;
+			success = true;
+			PGSTAR_VERBOSE_LOG("ui_fetch_file[%s]: success (binary=%d, len=%zu)",
+							   file_name ? file_name : "(null)",
+							   (final_body_len > 0) ? 1 : 0,
+							   final_body_len > 0 ? final_body_len : (source_len));
 		}
 	}
 	PG_CATCH();
 	{
 		ErrorData *edata = CopyErrorData();
+		char		reason_buf[128] = "";
 		
 		elog(pgstar_log_level, "pgstar: ui fetch asset query failed for '%s': %s", 
 			 file_name, edata ? edata->message : "unknown error");
 		
+		if (edata && edata->message)
+			strlcpy(reason_buf, edata->message, sizeof(reason_buf));
+
 		if (edata)
 			FreeErrorData(edata);
 
@@ -1114,13 +1258,24 @@ pgstar_ui_fetch_file(const char *file_name,
 		SPI_finish();
 		PopActiveSnapshot();
 		AbortCurrentTransaction();
-		return false;
+
+		pgstar_ui_mark_redownload(file_name, reason_buf[0] ? reason_buf : NULL);
 	}
 	PG_END_TRY();
+
+	if (!success)
+	{
+		PGSTAR_VERBOSE_LOG("ui_fetch_file[%s]: returning failure", file_name ? file_name : "(null)");
+		return false;
+	}
 
 	SPI_finish();
 	PopActiveSnapshot();
 	CommitTransactionCommand();
+
+	PGSTAR_VERBOSE_LOG("ui_fetch_file[%s]: returning success body_len=%zu",
+					   file_name ? file_name : "(null)",
+					   body_len ? *body_len : 0);
 
 	return found;
 }

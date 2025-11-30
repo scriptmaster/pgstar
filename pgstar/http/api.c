@@ -3,9 +3,11 @@
 #include "pgstar.h"
 
 #include "access/xact.h"
+#include "catalog/pg_type.h"
 #include "executor/spi.h"
 #include "tcop/tcopprot.h"
 #include "utils/builtins.h"
+#include "utils/json.h"
 #include "utils/snapmgr.h"
 
 #include <string.h>
@@ -17,6 +19,8 @@ static void pgstar_api_generic_table(const PgstarRequest *req,
 									 PgstarResponse *resp);
 static void pgstar_api_exec(const PgstarRequest *req, PgstarResponse *resp);
 static void pgstar_api_build_select_list(const char *query, StringInfo select_list);
+static void pgstar_json_append_tuple(StringInfo buf, TupleDesc tupdesc,
+									 HeapTuple tuple);
 
 void
 pgstar_route_api(const PgstarRequest *req, PgstarResponse *resp)
@@ -89,6 +93,75 @@ pgstar_route_api(const PgstarRequest *req, PgstarResponse *resp)
 
 	/* Generic handler: /api/:schema/:table */
 	pgstar_api_generic_table(req, nseg, segs, resp);
+}
+
+static void
+pgstar_json_append_tuple(StringInfo buf, TupleDesc tupdesc, HeapTuple tuple)
+{
+	bool		first = true;
+
+	appendStringInfoChar(buf, '{');
+	for (int attnum = 1; attnum <= tupdesc->natts; attnum++)
+	{
+		Form_pg_attribute attr = TupleDescAttr(tupdesc, attnum - 1);
+		Oid			atttypid = attr->atttypid;
+		char	   *value;
+
+		if (attr->attisdropped)
+			continue;
+
+		if (!first)
+			appendStringInfoChar(buf, ',');
+		first = false;
+
+		escape_json(buf, NameStr(attr->attname));
+		appendStringInfoChar(buf, ':');
+
+		value = SPI_getvalue(tuple, tupdesc, attnum);
+		if (value)
+			PGSTAR_TRACK_ALLOC("api:tuple_value", value, strlen(value) + 1);
+
+		if (value == NULL)
+		{
+			appendStringInfoString(buf, "null");
+			PGSTAR_VERBOSE_LOG("api_tuple: attr=%s NULL", NameStr(attr->attname));
+			continue;
+		}
+
+		PGSTAR_VERBOSE_LOG("api_tuple: attr=%s type=%u len=%zu",
+						   NameStr(attr->attname),
+						   atttypid,
+						   strlen(value));
+
+		switch (atttypid)
+		{
+			case BOOLOID:
+				appendStringInfoString(buf,
+									   (value[0] == 't' && value[1] == '\0')
+									   ? "true" : "false");
+				break;
+			case INT2OID:
+			case INT4OID:
+			case INT8OID:
+			case OIDOID:
+			case FLOAT4OID:
+			case FLOAT8OID:
+			case NUMERICOID:
+				appendStringInfoString(buf, value);
+				break;
+			case JSONOID:
+			case JSONBOID:
+				appendStringInfoString(buf, value);
+				break;
+			default:
+				escape_json(buf, value);
+				break;
+		}
+
+		PGSTAR_TRACK_FREE("api:tuple_value", value);
+		pfree(value);
+	}
+	appendStringInfoChar(buf, '}');
 }
 
 static void
@@ -243,29 +316,11 @@ pgstar_api_exec(const PgstarRequest *req, PgstarResponse *resp)
 		{
 			for (uint64 i = 0; i < rows; i++)
 			{
-				HeapTuple	tup = SPI_tuptable->vals[i];
-				TupleDesc	tupdesc = SPI_tuptable->tupdesc;
-
 				if (i > 0)
 					appendStringInfoString(&buf, ",");
 
-				appendStringInfoChar(&buf, '{');
-				for (int j = 1; j <= tupdesc->natts; j++)
-				{
-					char	   *colname;
-					char	   *val;
-
-					if (j > 1)
-						appendStringInfoString(&buf, ",");
-
-					colname = NameStr(TupleDescAttr(tupdesc, j - 1)->attname);
-					val = SPI_getvalue(tup, tupdesc, j);
-					if (!val)
-						val = "null";
-
-					appendStringInfo(&buf, "\"%s\":\"%s\"", colname, val);
-				}
-				appendStringInfoChar(&buf, '}');
+				pgstar_json_append_tuple(&buf, SPI_tuptable->tupdesc,
+										 SPI_tuptable->vals[i]);
 			}
 		}
 
@@ -401,29 +456,11 @@ pgstar_api_generic_table(const PgstarRequest *req,
 
 		for (uint64 i = 0; i < SPI_processed; i++)
 		{
-			HeapTuple	tup = SPI_tuptable->vals[i];
-			TupleDesc	tupdesc = SPI_tuptable->tupdesc;
-
 			if (i > 0)
 				appendStringInfoString(&buf, ",");
 
-			appendStringInfoChar(&buf, '{');
-			for (int j = 1; j <= tupdesc->natts; j++)
-			{
-				char	   *colname;
-				char	   *val;
-
-				if (j > 1)
-					appendStringInfoString(&buf, ",");
-
-				colname = NameStr(TupleDescAttr(tupdesc, j - 1)->attname);
-				val = SPI_getvalue(tup, tupdesc, j);
-				if (!val)
-					val = "null";
-
-				appendStringInfo(&buf, "\"%s\":\"%s\"", colname, val);
-			}
-			appendStringInfoChar(&buf, '}');
+			pgstar_json_append_tuple(&buf, SPI_tuptable->tupdesc,
+									 SPI_tuptable->vals[i]);
 		}
 
 		appendStringInfoString(&buf, "]\n");
@@ -446,6 +483,7 @@ pgstar_api_generic_table(const PgstarRequest *req,
 	PG_CATCH();
 	{
 		ErrorData  *edata = CopyErrorData();
+		MemoryContext old_ctx;
 
 		if (edata)
 			elog(pgstar_log_level, "pgstar: generic API query failed: %s", edata->message);
@@ -459,6 +497,8 @@ pgstar_api_generic_table(const PgstarRequest *req,
 			AbortCurrentTransaction();
 		}
 		
+		old_ctx = MemoryContextSwitchTo(caller_ctx);
+
 		if (edata && edata->sqlerrcode == ERRCODE_UNDEFINED_TABLE)
 		{
 			resp->status_code = 404;
@@ -474,6 +514,8 @@ pgstar_api_generic_table(const PgstarRequest *req,
 			resp->content_type = "application/json";
 			resp->body = pstrdup("{\"error\":\"generic api query failed\"}\n");
 		}
+
+		MemoryContextSwitchTo(old_ctx);
 
 		if (edata)
 			FreeErrorData(edata);

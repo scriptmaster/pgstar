@@ -3,6 +3,7 @@
 
 #include "postgres.h"
 #include "lib/stringinfo.h"
+#include "core/env.h"
 
 /* Globals */
 extern const char *PGSTAR_VERSION;
@@ -82,8 +83,28 @@ extern const char *pgstar_root_html;
 /* HTTP Client */
 char *pgstar_http_download(const char *url, size_t *len, char **content_type);
 
-/* Safe memory utilities */
+/* Safe memory / pointer tracking utilities */
 void pgstar_safe_pfree(void *ptr);
+void pgstar_ptr_track(const char *label, const void *ptr, ssize_t delta, Size bytes);
+
+#define PGSTAR_VERBOSE_LOG(fmt, ...) \
+	do { \
+		if (pgstar_env_verbose()) \
+			elog(pgstar_log_level, fmt, ##__VA_ARGS__); \
+	} while (0)
+
+#define PGSTAR_TRACK_ALLOC(label, ptr, bytes) \
+	do { \
+		const void *__pgstar_ptr = (const void *) (ptr); \
+		Size __pgstar_bytes = (Size) (bytes); \
+		pgstar_ptr_track((label), __pgstar_ptr, +1, __pgstar_bytes); \
+	} while (0)
+
+#define PGSTAR_TRACK_FREE(label, ptr) \
+	do { \
+		const void *__pgstar_ptr = (const void *) (ptr); \
+		pgstar_ptr_track((label), __pgstar_ptr, -1, 0); \
+	} while (0)
 
 #endif /* PGSTAR_H */
 

@@ -88,6 +88,8 @@ CREATE TABLE IF NOT EXISTS pgstar.files (
   )
 );
 
+-- Provision public.users so /api/public/users succeeds out of the box
+-- Ensure public schema exists; some cloud DBs drop it
 -- Migrate JS/CSS files from pages to files table
 INSERT INTO pgstar.files (file_name, content_type, text_data, is_binary, is_custom)
 SELECT page_name, content_type, html, FALSE, is_custom
@@ -130,7 +132,7 @@ const app = createApp({
         currentTableSrc() {
             const path = window.location.pathname;
             if (path.endsWith('/files')) return '/api/files';
-            if (path.endsWith('/users')) return '/api/public/users';
+            if (path.endsWith('/users')) return '/api/pgstar/users';
             if (path.endsWith('/jobs')) return '/api/jobs';
             // Default to information schema tables
             return '/api/information_schema/tables';

@@ -3,6 +3,7 @@
 
 void pgstar_env_init(void);
 int pgstar_env_port(void);
+bool pgstar_env_verbose(void);
 
 #endif /* PGSTAR_CORE_ENV_H */
 

@@ -22,6 +22,7 @@ PostgreSQL uses a hierarchical memory context system.
   4. **Deep Copy** data out: 
      - Strings: `pstrdup` 
      - Binary: `palloc` + `memcpy`
+     - Varlen Datums (text/varchar/bytea): use `PG_DETOAST_DATUM_COPY(datum)` so SPI can safely continue without invalidating your pointer.
      - **Do this before** `SPI_finish()` or `CommitTransactionCommand()`.
      - When returning `StringInfo` buffers to higher layers (HTTP/JSON helpers), explicitly `MemoryContextSwitchTo(old)` before copying so the final response lives in the caller's context.
   5. Commit: `CommitTransactionCommand()` (or `AbortCurrentTransaction()` on error).
@@ -29,7 +30,7 @@ PostgreSQL uses a hierarchical memory context system.
 ### 2. Binary Data Handling (CRITICAL)
 - **TOAST**: When retrieving `bytea` columns via SPI:
   - **NEVER** cast `Datum` directly to `bytea*` or `char*`.
-  - **ALWAYS** use `DatumGetByteaP(datum)` to ensure the data is detoasted (decompressed/fetched from external storage) and is a flat, valid pointer.
+  - **ALWAYS** use `PG_DETOAST_DATUM_COPY()` (or at minimum `DatumGetByteaP()`) before the tuple is reused. Copying gives you your own buffer and prevents later SPI calls from clobbering it.
 - **Caching**: The in-memory UI cache (`pgstar_ui_cache`) must explicitly track `body_len` to support binary data (which may contain null bytes).
 
 ### 3. Worker Hygiene
@@ -62,3 +63,4 @@ PostgreSQL uses a hierarchical memory context system.
 - **HTTP JSON responses crashing worker**: `pgstar_json_files()` returned `buf.data` from the SPI context; after `SPI_finish()` the pointer was freed, leading to segfaults under load. Fix: switch to the caller's memory context and copy the JSON string before finishing SPI.
 - **Intermittent Crashes on Download**: Caused by `CommitTransactionCommand()` in `PG_CATCH` block (illegal state). Fixed by using `AbortCurrentTransaction()`.
 - **Broken Binary Data**: Caused by casting TOASTed `datum` directly. Fixed by using `DatumGetByteaP()`.
+- **Lazy Download Segfault**: Binary pointers pulled from `SPI_getbinval` were reused after more SPI work. Fixed by taking ownership with `PG_DETOAST_DATUM_COPY()` so subsequent queries cannot free the data we are still using.
