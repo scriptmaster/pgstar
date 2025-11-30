@@ -26,8 +26,8 @@ SELECT pgstar_version();
 
 -- select page_name, parent_tag from pgstar.pages WHERE page_name='dashboard';
 
-select * from pgstar.jobs;
-select * from pgstar.pages;
-select * from pgstar.files;
+-- select * from pgstar.jobs;
+-- select * from pgstar.pages;
+-- select * from pgstar.files;
 
--- DELETE FROM pgstar.pages; ˀx  
+-- DELETE FROM pgstar.pages;

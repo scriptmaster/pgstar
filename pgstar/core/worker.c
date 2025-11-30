@@ -123,11 +123,9 @@ pgstar_worker(Datum main_arg)
 		if (rc & WL_TIMEOUT)
 		{
 			static int tick_count = 0;
-			tick_count++;
-			// if (tick_count++ % 6 == 0) /* Log every minute (6 * 10s) */
-			elog(pgstar_log_level, "pgstar: http worker heartbeat (tick %d)", tick_count);
-			// else
-			// 	elog(DEBUG3, "pgstar: worker heartbeat");
+			// tick_count++;
+			if (tick_count++ % 6 == 0) /* Log every minute (6 * 10s) */
+				elog(pgstar_log_level, "pgstar: http worker heartbeat (tick %d)", tick_count);
 		}
 	}
 

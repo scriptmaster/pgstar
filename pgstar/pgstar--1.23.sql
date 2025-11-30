@@ -186,11 +186,18 @@ app.component('data-table-grid', {
         isObject(val) {
             return typeof val === 'object' && val !== null;
         },
-        // Utility: Convert "camelCase" to "Title Case"
+        // Utility: Convert "camelCase" or "snake_case" to "Title Case"
         humanize(str) {
             return str
+                // Handle snake_case: replace underscores with spaces
+                .replace(/_/g, ' ')
+                // Handle camelCase: add space before capital letters
                 .replace(/([A-Z])/g, ' $1')
-                .replace(/^./, str => str.toUpperCase());
+                // Capitalize first letter of each word
+                .split(' ')
+                .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+                .join(' ')
+                .trim();
         }
     },
     mounted() {
@@ -603,41 +610,42 @@ SET parent_tag   = EXCLUDED.parent_tag,
     updated_at   = now()
 WHERE pgstar.pages.is_custom = FALSE;
 
--- DELETE FROM pgstar.pages WHERE page_name='dashboard';
+-- Ensure clean reinstall of dashboard page
+DELETE FROM pgstar.pages WHERE page_name = 'dashboard' AND is_custom = FALSE;
 INSERT INTO pgstar.pages (page_name, parent_tag, html, content_type, meta, js, css, is_custom)
 VALUES (
   'dashboard',
   '',
   '<div id="app">
     <section class="panel">
-      <aside>
+    <aside>
         <ul class="tree-view has-connector has-collapse-button has-container has-scrollbar">
-          <li><a href="/app/">Dashboard</a></li>
-          <li>
-            <a href="/app/tables">Tables</a>
-            <ul>
-              <li><a href="/app/tables/users">Users</a></li>
+        <li><a href="/app/">Dashboard</a></li>
+        <li>
+          <a href="/app/tables">Tables</a>
+          <ul>
+            <li><a href="/app/tables/users">Users</a></li>
               <li><a href="/app/tables/files">Files</a></li>
               <li><a href="/app/tables/jobs">Jobs</a></li>
-            </ul>
-          </li>
-        </ul>
-      </aside>
-      <main>
-        <section class="titlebar">
-          <ul role="menubar">
-            <li role="menuitem" tabindex="0">Create</li>
-            <li role="menuitem" tabindex="0">Read</li>
-            <li role="menuitem" tabindex="0">Update</li>
-            <li role="menuitem" tabindex="0">Delete</li>
-            <li role="menuitem" tabindex="0">Options</li>
-            <div class="searchbox mt-1">
-              <input type="search" placeholder="Filter" />
-              <button aria-label="search"></button>
-            </div>
           </ul>
-        </section>
-        <div class="window-body m-0">
+        </li>
+      </ul>
+    </aside>
+    <main>
+      <section class="titlebar">
+        <ul role="menubar">
+          <li role="menuitem" tabindex="0">Create</li>
+          <li role="menuitem" tabindex="0">Read</li>
+          <li role="menuitem" tabindex="0">Update</li>
+          <li role="menuitem" tabindex="0">Delete</li>
+          <li role="menuitem" tabindex="0">Options</li>
+          <div class="searchbox mt-1">
+            <input type="search" placeholder="Filter" />
+            <button aria-label="search"></button>
+          </div>
+        </ul>
+      </section>
+      <div class="window-body m-0">
           <data-table-grid :src="currentTableSrc"></data-table-grid>
         </div>
       </main>
@@ -645,7 +653,9 @@ VALUES (
   </div>
     
   <template id="data-table-template">
-      <div v-if="loading" class="loading">Loading...</div>
+      <div v-if="loading">
+        <p>Loading data...</p>
+      </div>
       <div v-else-if="error" class="error">Error: {{ error }}</div>
       <table v-else>
         <thead>
@@ -661,7 +671,7 @@ VALUES (
             </td>
           </tr>
         </tbody>
-      </table>
+        </table>
     </template>
 ',
   'text/html; charset=utf-8',

@@ -51,6 +51,11 @@ PostgreSQL uses a hierarchical memory context system.
 - **Capabilities**: Supports HTTP/1.1, HTTPS (via OpenSSL), and basic `Transfer-Encoding: chunked`.
 - **Usage**: Used internally for downloading assets defined in `pgstar.files`.
 
+## Frontend Guidelines
+
+### UI Component Restrictions
+- **Window/Title Decorations**: Do NOT use `title-bar`, `window-body`, or `window` anywhere in the frontend for decoration. These components are not allowed in the UI.
+
 ## Recent Issues & Fixes
 - **JSON API returning Integers**: Caused by returning `buf.data` (from `StringInfo`) which was allocated in the transaction context. Fixed by `pstrdup`ing the result before `SPI_finish`.
 - **Intermittent Crashes on Download**: Caused by `CommitTransactionCommand()` in `PG_CATCH` block (illegal state). Fixed by using `AbortCurrentTransaction()`.

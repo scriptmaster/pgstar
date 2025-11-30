@@ -15,6 +15,7 @@ You are an expert PostgreSQL extension developer working on `pgstar`.
 
 ## 2. Project Architecture
 - **Frontend**: Vue.js. Assets stored in `pgstar.files`.
+  - **UI Components**: Do NOT use `title-bar`, `window-body`, or `window` anywhere in the frontend for decoration.
 - **Lazy Downloads**: `is_download=TRUE` + URL triggers automatic download-and-cache logic.
 - **Backend**: C extension. Custom HTTP stack with OpenSSL support.
 - **Context**: Read `CONTEXT.md` for full architectural details and history.

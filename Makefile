@@ -1,7 +1,9 @@
 .PHONY: extension-install extension-clean restart test run auto auto-run log logs tail psql
 
 # Default target
-all: extension-install
+all: extension-install auto
+
+install: extension-install
 
 # Extension management
 extension-install:

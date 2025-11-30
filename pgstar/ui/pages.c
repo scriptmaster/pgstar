@@ -111,7 +111,7 @@ pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 	}
 	else if (strncmp(path, "/app/", 5) == 0)
 	{
-		/* All /app/* paths use the dashboard page */
+		/* All /app/ paths use the dashboard page */
 		strlcpy(page_name, default_page_name, sizeof(page_name));
 		
 		/* Build title from path segments */
@@ -181,6 +181,7 @@ pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 	{
 		bool		content_type_allocated; /* Assume allocated by pgstar_ui_render_page */
 		char	   *body_cache;
+		size_t		blen;
 
 		if (body == NULL)
 		{
@@ -205,7 +206,7 @@ pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 			 page_name, cache_key, body ? strlen(body) : 0, content_type ? content_type : "(null)");
 
 		body_cache = pstrdup(body); // this copy is for the cache and freed later.
-		size_t blen = body ? strlen(body) : 0;
+		blen = body ? strlen(body) : 0;
 		// elog(pgstar_log_level, "pgstar: UI cache PUT: body_copy created at %p", (void *)body_cache);
 
 		pgstar_ui_cache_put(cache_key, body_cache, blen, content_type);
@@ -244,6 +245,12 @@ pgstar_route_ui_js(const PgstarRequest *req, PgstarResponse *resp)
 	char		cache_key[192];
 	char	   *body = NULL;
 	const char *content_type = NULL;
+	size_t		body_len = 0;
+	char		file_path[256];
+	char	   *body_cache = NULL;
+	char	   *body_resp = NULL;
+	char	   *content_type_cache = NULL;
+	char	   *content_type_resp = NULL;
 
 	if (pg_strcasecmp(req->method, "GET") != 0)
 	{
@@ -275,7 +282,6 @@ pgstar_route_ui_js(const PgstarRequest *req, PgstarResponse *resp)
 
 	snprintf(cache_key, sizeof(cache_key), "js:%s", name);
 
-	size_t body_len = 0;
 	if (pgstar_ui_cache_get(cache_key, &body, &body_len, &content_type))
 	{
 		resp->status_code = 200;
@@ -286,7 +292,6 @@ pgstar_route_ui_js(const PgstarRequest *req, PgstarResponse *resp)
 		return;
 	}
 
-	char file_path[256];
 	snprintf(file_path, sizeof(file_path), "js/%s", name);
 
 	if (!pgstar_ui_fetch_file(file_path, &body, &body_len, &content_type))
@@ -302,9 +307,6 @@ pgstar_route_ui_js(const PgstarRequest *req, PgstarResponse *resp)
 	/* CRITICAL: Copy body and content_type from transaction context to longer-lived context
 	 * before storing in cache. The transaction context is cleaned up after SPI_finish(),
 	 * so pointers from pgstar_ui_fetch_file() become invalid. */
-	char *body_cache;
-	char *body_resp;
-	
 	if (body_len == 0 && body != NULL)
 		body_len = strlen(body);
 
@@ -327,8 +329,8 @@ pgstar_route_ui_js(const PgstarRequest *req, PgstarResponse *resp)
 		body_len = 0;
 	}
 	
-	char *content_type_cache = pstrdup(content_type);
-	char *content_type_resp = pstrdup(content_type);
+	content_type_cache = pstrdup(content_type);
+	content_type_resp = pstrdup(content_type);
 	
 	pgstar_ui_cache_put(cache_key, body_cache, body_len, content_type_cache);
 
@@ -351,6 +353,12 @@ pgstar_route_ui_css(const PgstarRequest *req, PgstarResponse *resp)
 	char		cache_key[192];
 	char	   *body = NULL;
 	const char *content_type = NULL;
+	size_t		body_len = 0;
+	char		file_path[256];
+	char	   *body_cache = NULL;
+	char	   *body_resp = NULL;
+	char	   *content_type_cache = NULL;
+	char	   *content_type_resp = NULL;
 
 	if (pg_strcasecmp(req->method, "GET") != 0)
 	{
@@ -382,7 +390,6 @@ pgstar_route_ui_css(const PgstarRequest *req, PgstarResponse *resp)
 
 	snprintf(cache_key, sizeof(cache_key), "css:%s", name);
 
-	size_t body_len = 0;
 	if (pgstar_ui_cache_get(cache_key, &body, &body_len, &content_type))
 	{
 		resp->status_code = 200;
@@ -393,7 +400,6 @@ pgstar_route_ui_css(const PgstarRequest *req, PgstarResponse *resp)
 		return;
 	}
 
-	char file_path[256];
 	snprintf(file_path, sizeof(file_path), "css/%s", name);
 
 	if (!pgstar_ui_fetch_file(file_path, &body, &body_len, &content_type))
@@ -409,9 +415,6 @@ pgstar_route_ui_css(const PgstarRequest *req, PgstarResponse *resp)
 	/* CRITICAL: Copy body and content_type from transaction context to longer-lived context
 	 * before storing in cache. The transaction context is cleaned up after SPI_finish(),
 	 * so pointers from pgstar_ui_fetch_file() become invalid. */
-	char *body_cache;
-	char *body_resp;
-	
 	if (body_len == 0 && body != NULL)
 		body_len = strlen(body);
 
@@ -434,8 +437,8 @@ pgstar_route_ui_css(const PgstarRequest *req, PgstarResponse *resp)
 		body_len = 0;
 	}
 	
-	char *content_type_cache = pstrdup(content_type);
-	char *content_type_resp = pstrdup(content_type);
+	content_type_cache = pstrdup(content_type);
+	content_type_resp = pstrdup(content_type);
 	
 	pgstar_ui_cache_put(cache_key, body_cache, body_len, content_type_cache);
 
@@ -504,6 +507,7 @@ pgstar_ui_cache_put(const char *key, const char *body, size_t body_len, const ch
 	int			i;
 	int			slot = -1;
 	time_t		oldest = 0;
+	MemoryContext old_ctx;
 
 	elog(pgstar_log_level, "pgstar: cache_put entry: key=%s, body_len=%zu, content_type=%p", 
 		 key ? key : "(null)", body_len, (void *)content_type);
@@ -587,7 +591,7 @@ pgstar_ui_cache_put(const char *key, const char *body, size_t body_len, const ch
 	// elog(pgstar_log_level, "pgstar: cache_put: using slot %d", slot);
 
 	/* Switch to TopMemoryContext for cache allocations so they survive the request */
-	MemoryContext old_ctx = MemoryContextSwitchTo(TopMemoryContext);
+	old_ctx = MemoryContextSwitchTo(TopMemoryContext);
 
 	pgstar_ui_cache[slot].valid = true;
 	// elog(pgstar_log_level, "pgstar: cache_put: copying key");
@@ -749,7 +753,6 @@ bool
 pgstar_ui_fetch_file(const char *file_name,
 					  char **body, size_t *body_len, const char **content_type)
 {
-	StringInfoData buf;
 	int			ret;
 	bool		found = false;
 	MemoryContext oldcontext;
@@ -785,7 +788,7 @@ pgstar_ui_fetch_file(const char *file_name,
 				"SELECT text_data, binary_data, is_binary, content_type, is_download "
 				"FROM pgstar.files "
 				"WHERE file_name = $1 "
-				"ORDER BY is_custom DESC, file_id DESC "
+				"ORDER BY file_id ASC "
 				"LIMIT 1");
 			
 			elog(pgstar_log_level, "pgstar: executing query with args: %s", query_buf.data);
@@ -801,10 +804,12 @@ pgstar_ui_fetch_file(const char *file_name,
 
 		if (SPI_processed == 0)
 		{
+			int debug_ret;
+
 			elog(pgstar_log_level, "pgstar: file '%s' not found in pgstar.files table", file_name);
 
 			/* DEBUG: List all files to see what's actually there (re-added for debugging) */
-			int debug_ret = SPI_execute("SELECT file_name FROM pgstar.files", true, 0);
+			debug_ret = SPI_execute("SELECT file_name FROM pgstar.files", true, 0);
 			if (debug_ret == SPI_OK_SELECT) {
 				StringInfoData debug_buf;
 				initStringInfo(&debug_buf);
@@ -830,6 +835,13 @@ pgstar_ui_fetch_file(const char *file_name,
 			bool		ct_allocated = false;
 			bool		isnull;
 			bool		is_download = false;
+			Datum		binary_datum;
+			Datum		is_download_datum;
+			char	   *raw_ct;
+			size_t		final_body_len = 0;
+			size_t		source_len = 0;
+			char	   *temp_body = NULL;
+			char	   *temp_ct = NULL;
 			
 			/* IMPORTANT: We must make copies of SPI-managed values (text_data, ct) 
 			 * immediately because subsequent SPI calls (like the UPDATE below) 
@@ -839,7 +851,7 @@ pgstar_ui_fetch_file(const char *file_name,
 			text_data = raw_text_data ? pstrdup(raw_text_data) : NULL;
 			
 			/* Correctly handle binary data (bytea) which might be TOASTed */
-			Datum binary_datum = SPI_getbinval(tup, tupdesc, 2, &isnull);
+			binary_datum = SPI_getbinval(tup, tupdesc, 2, &isnull);
 			if (!isnull)
 			{
 				/* Detoast if necessary. DatumGetByteaP ensures we get a flat, non-compressed varlena. */
@@ -867,10 +879,10 @@ pgstar_ui_fetch_file(const char *file_name,
 				is_binary = !isnull && DatumGetBool(is_binary_datum);
 			}
 			
-			char *raw_ct = SPI_getvalue(tup, tupdesc, 4);
+			raw_ct = SPI_getvalue(tup, tupdesc, 4);
 			ct = raw_ct ? pstrdup(raw_ct) : NULL;
 			
-			Datum is_download_datum = SPI_getbinval(tup, tupdesc, 5, &isnull);
+			is_download_datum = SPI_getbinval(tup, tupdesc, 5, &isnull);
 			if (!isnull)
 				is_download = DatumGetBool(is_download_datum);
 
@@ -887,8 +899,6 @@ pgstar_ui_fetch_file(const char *file_name,
 				if (downloaded_body != NULL)
 				{
 					/* Prepare update query */
-					char *quoted_fn;
-					StringInfoData update_buf;
 					Oid argtypes_upd[3];
 					Datum values_upd[3];
 					char nulls_upd[3] = {' ', ' ', ' '};
@@ -907,10 +917,6 @@ pgstar_ui_fetch_file(const char *file_name,
 					 * No, for binary update, parameter binding is much safer and easier than hex escaping.
 					 * We already use SPI. Let's use SPI_execute_with_args for the UPDATE.
 					 */
-					
-					quoted_fn = quote_literal_cstr(file_name);
-					initStringInfo(&update_buf);
-					
 					/* Update columns: binary_data, text_data=NULL, is_binary=TRUE, is_download=FALSE, content_type */
 					/* Note: We use BYTEA for the content. */
 					
@@ -1030,11 +1036,6 @@ pgstar_ui_fetch_file(const char *file_name,
 
 			/* Extract data lengths and content while still in transaction context.
 			 * We must read from SPI pointers before switching contexts. */
-			size_t final_body_len = 0;
-			size_t source_len = 0;
-			char *temp_body = NULL;
-			char *temp_ct = NULL;
-			
 			if (is_binary && binary_data != NULL)
 			{
 				/* Extract binary data while still in transaction context */
@@ -1159,7 +1160,6 @@ pgstar_build_title_from_path(const char *path, char *title_buf, size_t title_buf
 			const char *seg = segs_buf[i];
 			size_t		seg_len = strlen(seg);
 			char		capitalized[64];
-			int			j;
 
 			/* Skip empty segments */
 			if (seg_len == 0)
@@ -1244,6 +1244,7 @@ pgstar_route_ui_favicon(const PgstarRequest *req, PgstarResponse *resp)
 	char		cache_key[64];
 	char	   *body = NULL;
 	const char *content_type = NULL;
+	size_t		body_len = 0;
 
 	if (pg_strcasecmp(req->method, "GET") != 0)
 	{
@@ -1266,7 +1267,6 @@ pgstar_route_ui_favicon(const PgstarRequest *req, PgstarResponse *resp)
 	/* Use specific cache key for favicon */
 	snprintf(cache_key, sizeof(cache_key), "favicon.ico");
 
-	size_t body_len = 0;
 	/* NOTE: Cache currently treats body as string. Binary data with NULLs will be truncated.
 	 * Since favicon.ico is binary, we skip cache for now until cache supports binary length.
 	 */

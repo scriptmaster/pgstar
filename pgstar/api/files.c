@@ -13,6 +13,11 @@ pgstar_json_files(void)
 {
     int             ret;
     StringInfoData  buf;
+    MemoryContext   caller_ctx;
+    MemoryContext   old_ctx;
+    char           *result_json;
+
+    caller_ctx = CurrentMemoryContext;
 
     SetCurrentStatementStartTimestamp();
     StartTransactionCommand();
@@ -28,7 +33,7 @@ pgstar_json_files(void)
     ret = SPI_execute(
         "SELECT file_id, file_name, content_type, is_binary, is_custom, is_download, updated_at "
         "FROM pgstar.files "
-        "ORDER BY file_name ASC",
+        "ORDER BY file_id ASC",
         true, 0);
 
     if (ret != SPI_OK_SELECT)
@@ -74,8 +79,11 @@ pgstar_json_files(void)
 
     appendStringInfoString(&buf, "],\"columns\":[\"file_id\",\"file_name\",\"content_type\",\"is_binary\",\"is_custom\",\"is_download\",\"updated_at\"]}\n");
 
-    /* Copy the result string to a new buffer in the caller's context before finishing SPI */
-    char *result_json = pstrdup(buf.data);
+    /* Copy result into caller's context before we tear down the transaction context */
+    old_ctx = MemoryContextSwitchTo(caller_ctx);
+    result_json = pstrdup(buf.data);
+    MemoryContextSwitchTo(old_ctx);
+
     pfree(buf.data);
 
     SPI_finish();
