@@ -1,56 +1,168 @@
-# pgstar Extension Development Rules
+# pgstar Extension Development Rules (.cursorrules)
 
-You are an expert PostgreSQL extension developer working on `pgstar`.
+You are an expert PostgreSQL extension + C systems developer working on `pgstar`.
+Cursor MUST enforce these rules in every edit.
 
-## 1. Code Standards
-- **Memory Safety**: 
-  - ALWAYS Deep Copy SPI results to caller's memory context before committing transaction.
-  - NEVER return pointers allocated inside a transaction scope without copying them.
-  - **SPI_getvalue() WARNING - AVOID IF POSSIBLE**:
-    - **CRITICAL**: `SPI_getvalue()` can return corrupted pointers that cause segfaults when passed to `strlen()` or `pstrdup()`.
-    - **PREFERRED PATTERN**: Use `SPI_getbinval()` → `Datum` → type output function instead:
-      ```c
-      bool isnull;
-      Datum attr_datum = SPI_getbinval(tuple, tupdesc, attnum, &isnull);
-      if (!isnull) {
-          Oid output_func_oid;
-          bool output_func_isvarlena;
-          getTypeOutputInfo(atttypid, &output_func_oid, &output_func_isvarlena);
-          char *value = OidOutputFunctionCall(output_func_oid, attr_datum);
-          // value is guaranteed valid or raises normal Postgres ERROR (caught by PG_TRY)
-          // Use value, then pgstar_safe_pfree(value);
-      }
-      ```
-    - **If you MUST use SPI_getvalue()** (legacy code):
-      - `SPI_getvalue()` returns pointers that are ONLY valid until `SPI_finish()` is called.
-      - **MANDATORY**: Copy ALL `SPI_getvalue()` results immediately with `pstrdup()` before ANY use.
-      - **NEVER** call `strlen()` or `pstrdup()` on `SPI_getvalue()` result without wrapping in `PG_TRY`/`PG_CATCH`.
-      - **NEVER** use `SPI_getvalue()` pointers directly in string operations.
-    - **MANDATORY**: NEVER use `pfree()` directly. ALWAYS use `pgstar_safe_pfree()` instead:
-      - `pgstar_safe_pfree()` is defined in `pgstar/core/utils.c` and declared in `pgstar/pgstar.h`
-      - It safely handles NULL pointers and catches errors gracefully to prevent segfaults
-      - Include `pgstar.h` in any file that needs to free memory: `#include "pgstar.h"`
-      - Example: `pgstar_safe_pfree(ptr);` instead of `pfree(ptr);`
-  - When adding new helper functions, manage ownership explicitly: allocate in the correct context, free exactly once, and `pstrdup`/`escape_json` before `SPI_finish()` so no caller touches freed memory.
-  - When returning `StringInfo`/buffers to the HTTP layer (e.g., `pgstar_json_*`), switch to the caller's memory context (`MemoryContextSwitchTo`) and copy before `SPI_finish()`; HTTP responses must never reference transaction-context memory.
-  - For varlena datums (text/varchar/bytea) you intend to use after another SPI call, take ownership with `PG_DETOAST_DATUM_COPY` so later SPI work or TOAST detachment cannot invalidate your pointer.
-- **Binary Safety**:
-  - ALWAYS use `DatumGetByteaP()` for `bytea` columns to handle TOAST/compression correctly.
-  - Track `body_len` explicitly for all binary data; do not rely on `strlen`.
-  - For UI assets, binary payloads must be base64-encoded into `text_data`; never reintroduce `BYTEA` columns to `pgstar.files`.
-- **Concurrency**: ALWAYS put `CHECK_FOR_INTERRUPTS()` in any `for(;;)` or `while` loop in background workers.
-- **SQL Execution**: Prefer inlining literals (`quote_literal_cstr`) for simple lookups to avoid SPI parameter bugs.
-- **Logging**: Use `elog(pgstar_log_level, ...)` for info/debug logs.
+===============================================================
+1. HARD RULES (MANDATORY)
+===============================================================
 
-## 2. Project Architecture
-- **Frontend**: Vue.js. Assets stored in `pgstar.files`.
-  - **UI Components**: Do NOT use `title-bar`, `window-body`, or `window` anywhere in the frontend for decoration.
-- **Lazy Downloads**: `is_download=TRUE` + URL triggers automatic download-and-cache logic.
-- **Backend**: C extension. Custom HTTP stack with OpenSSL support.
-- **Context**: Read `CONTEXT.md` for full architectural details and history.
+[1] MEMORY SAFETY IS CRITICAL — NEVER BREAK THIS.
 
-## 3. Workflow
-- **Build**: Always run `make extension-install` to build and install changes.
-- **Restart**: `pgstar_worker` restarts automatically on crash/reload, or use `make restart` if needed.
-- **Do Not Delete**: Do not remove existing Makefile targets or functionality unless explicitly asked. The user relies on `make auto`, `make log`, etc.
+- Never return pointers from:
+  - SPI context
+  - Transaction context
+  - Any context that will be freed before the caller returns
 
+- Always deep-copy everything needed by the caller:
+  - Strings: pstrdup()
+  - bytea/text/varchar (varlena): PG_DETOAST_DATUM_COPY()
+  - Buffers: palloc + memcpy()
+
+- All frees MUST use:
+    pgstar_safe_pfree(ptr);
+  Never call pfree() directly.
+
+- When building API/UI/HTML/JSON responses:
+    MemoryContext caller = CurrentMemoryContext;
+    Build in Tx memory.
+    MemoryContextSwitchTo(caller);
+    final = pstrdup(buf.data);
+    MemoryContextSwitchTo(old);
+    SPI_finish();
+    return final;   <-- final now lives in caller's context
+
+
+===============================================================
+2. SPI RULES (STRICT)
+===============================================================
+
+[2.1] Preferred pattern ALWAYS:
+    bool isnull;
+    Datum d = SPI_getbinval(tuple, tupdesc, attnum, &isnull);
+    if (!isnull) {
+        Oid out_fn;
+        bool isvarlena;
+        getTypeOutputInfo(atttypid, &out_fn, &isvarlena);
+        char *value = OidOutputFunctionCall(out_fn, d);
+        use value;
+        pgstar_safe_pfree(value);
+    }
+
+[2.2] SPI_getvalue() is legacy — AVOID IT. Use SPI_getbinval. If last-resort, then:
+  - It MUST wrap the usage in pstrdup() immediately
+  - It MUST protect strlen/pstrdup with PG_TRY/PG_CATCH
+  - It MUST avoid using the raw pointer in any string op
+  - It MUST free the pstrdup’d value with pgstar_safe_pfree()
+  - It MUST still check if SPI_getbinval can be used instead; refactor to SPI_getbinval is the preferred solution.
+
+[2.3] Never store SPI pointers in caches, globals, UI, HTTP replies.
+
+[2.4] Cursor must check: Does any pointer used after SPI_finish()
+      originate from SPI? If yes → MUST copy it.
+
+
+===============================================================
+3. VARLENA / BINARY RULES
+===============================================================
+
+[3.1] For bytea / text / varchar / jsonb (TOAST-able):
+  - ALWAYS use:
+        bytea *b = (bytea*) PG_DETOAST_DATUM_COPY(datum);
+  - Never cast Datum directly to char* or bytea*.
+
+[3.2] Never use strlen() for binary.
+  Track explicit length fields.
+
+[3.3] All UI/static assets are stored in TEXT:
+  - Raw UTF-8 for text
+  - Base64 for binary
+
+
+===============================================================
+4. HTTP & UI RULES
+===============================================================
+
+[4.1] PgstarResponse.body must be allocated in caller context.
+
+[4.2] Cursor must verify:
+  - resp->body_len is set for binary responses
+  - otherwise length = strlen(resp->body)
+
+[4.3] UI cache entries live in TopMemoryContext only.
+
+
+===============================================================
+5. BACKGROUND WORKERS + JOBS
+===============================================================
+
+[5.1] Every long loop MUST contain:
+    CHECK_FOR_INTERRUPTS();
+
+[5.2] Error path rules:
+  - NEVER call CommitTransactionCommand() inside PG_CATCH
+  - ALWAYS call AbortCurrentTransaction()
+
+[5.3] Cursor must ensure ALL SPI sequences follow:
+    StartTransactionCommand();
+    PushActiveSnapshot(GetTransactionSnapshot());
+    SPI_connect();
+    ... work ...
+    SPI_finish();
+    PopActiveSnapshot();
+    CommitTransactionCommand();
+
+
+===============================================================
+6. FRONTEND (Vue) RULES
+===============================================================
+
+Forbidden in UI:
+- <title-bar>
+- <window-body>
+- <window>
+
+Cursor must remove or rewrite them.
+
+
+===============================================================
+7. MAKEFILE / WORKFLOW RULES
+===============================================================
+
+Cursor must never delete or rename:
+- make auto
+- make log
+- make extension-install
+- make restart
+
+===============================================================
+8. CURSOR CHECKLIST (ALWAYS RUN THROUGH)
+===============================================================
+
+[ ] Does any pointer outlive the transaction context?
+    → MUST be deep-copied.
+
+[ ] Are any SPI_getvalue() pointers used directly?
+    → MUST refactor immediately to a proper SPI_getbinval. The last-resort alternative is to wrap in pstrdup + PG_TRY + safe free, but the target state is to remove SPI_getvalue() entirely.
+
+[ ] Are any varlena values dereferenced?
+    → MUST PG_DETOAST_DATUM_COPY.
+
+[ ] Are any StringInfo buffers returned directly?
+    → MUST pstrdup() into caller context.
+
+[ ] Are any pfree() calls present?
+    → Replace with pgstar_safe_pfree().
+
+[ ] Does any loop lack CHECK_FOR_INTERRUPTS()?
+    → Add it.
+
+[ ] Does PG_CATCH wrongly commit?
+    → Fix to AbortCurrentTransaction().
+
+[ ] Are HTTP/UI cache entries in TopMemoryContext?
+    → Ensure correct context.
+
+===============================================================
+END OF FILE
+===============================================================

@@ -1,5 +1,5 @@
 EXTENSION = pgstar
-DATA = pgstar--1.23.sql
+DATA = pgstar--1.31.sql
 PGFILEDESC = "pgstar - postgres web server"
 
 MODULE_big = pgstar
