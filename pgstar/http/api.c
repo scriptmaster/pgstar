@@ -159,6 +159,9 @@ pgstar_api_exec(const PgstarRequest *req, PgstarResponse *resp)
 	const char *sql_to_run = NULL;
 	StringInfoData sql_dynamic;
 	bool	used_dynamic = false;
+	MemoryContext caller_ctx = CurrentMemoryContext;
+	MemoryContext old_ctx;
+	char   *resp_json = NULL;
 
 	if (pg_strcasecmp(req->method, "GET") != 0 &&
 		pg_strcasecmp(req->method, "POST") != 0)
@@ -262,6 +265,12 @@ pgstar_api_exec(const PgstarRequest *req, PgstarResponse *resp)
 
 		appendStringInfoString(&buf, "]}\n");
 
+		old_ctx = MemoryContextSwitchTo(caller_ctx);
+		resp_json = pstrdup(buf.data);
+		MemoryContextSwitchTo(old_ctx);
+
+		pfree(buf.data);
+
 		SPI_finish();
 		PopActiveSnapshot();
 		CommitTransactionCommand();
@@ -269,7 +278,7 @@ pgstar_api_exec(const PgstarRequest *req, PgstarResponse *resp)
 		resp->status_code = 200;
 		resp->status_text = "OK";
 		resp->content_type = "application/json";
-		resp->body = buf.data;
+		resp->body = resp_json;
 
 		if (used_dynamic && sql_dynamic.data)
 			pfree(sql_dynamic.data);
@@ -326,6 +335,9 @@ pgstar_api_generic_table(const PgstarRequest *req,
 	const char *table;
 	StringInfoData sql;
 	StringInfoData select_list;
+	MemoryContext caller_ctx = CurrentMemoryContext;
+	MemoryContext old_ctx;
+	char	   *resp_json = NULL;
 
 	if (nseg < 3)
 	{
@@ -410,6 +422,12 @@ pgstar_api_generic_table(const PgstarRequest *req,
 
 		appendStringInfoString(&buf, "]\n");
 
+		old_ctx = MemoryContextSwitchTo(caller_ctx);
+		resp_json = pstrdup(buf.data);
+		MemoryContextSwitchTo(old_ctx);
+
+		pfree(buf.data);
+
 		SPI_finish();
 		PopActiveSnapshot();
 		CommitTransactionCommand();
@@ -417,7 +435,7 @@ pgstar_api_generic_table(const PgstarRequest *req,
 		resp->status_code = 200;
 		resp->status_text = "OK";
 		resp->content_type = "application/json";
-		resp->body = buf.data;
+		resp->body = resp_json;
 	}
 	PG_CATCH();
 	{
