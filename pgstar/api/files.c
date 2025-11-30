@@ -32,7 +32,7 @@ pgstar_json_files(void)
     /* Select file metadata. We don't select the actual payload (text/base64 data)
      * to keep the list lightweight. */
     ret = SPI_execute(
-        "SELECT file_id, file_name, content_type, is_binary, is_custom, is_download, updated_at "
+        "SELECT file_id, file_name, content_type, is_binary, is_custom, is_download, download_url, file_size, updated_at "
         "FROM pgstar.files "
         "ORDER BY file_id ASC",
         true, 0);
@@ -58,6 +58,8 @@ pgstar_json_files(void)
         char       *raw_is_binary;
         char       *raw_is_custom;
         char       *raw_is_download;
+        char       *raw_download_url;
+        char       *raw_file_size;
         char       *raw_updated_at;
         char       *file_id;
         char       *file_name;
@@ -65,6 +67,8 @@ pgstar_json_files(void)
         char       *is_binary;
         char       *is_custom;
         char       *is_download;
+        char       *download_url;
+        char       *file_size;
         char       *updated_at;
         
         if (SPI_tuptable->vals == NULL || i >= SPI_tuptable->alloced)
@@ -84,7 +88,9 @@ pgstar_json_files(void)
         raw_is_binary = SPI_getvalue(tup, tupdesc, 4);
         raw_is_custom = SPI_getvalue(tup, tupdesc, 5);
         raw_is_download = SPI_getvalue(tup, tupdesc, 6);
-        raw_updated_at = SPI_getvalue(tup, tupdesc, 7);
+        raw_download_url = SPI_getvalue(tup, tupdesc, 7);
+        raw_file_size = SPI_getvalue(tup, tupdesc, 8);
+        raw_updated_at = SPI_getvalue(tup, tupdesc, 9);
 
         /* Copy SPI_getvalue results immediately - they're in transaction context */
         file_id = raw_file_id ? pstrdup(raw_file_id) : NULL;
@@ -93,6 +99,8 @@ pgstar_json_files(void)
         is_binary = raw_is_binary ? pstrdup(raw_is_binary) : NULL;
         is_custom = raw_is_custom ? pstrdup(raw_is_custom) : NULL;
         is_download = raw_is_download ? pstrdup(raw_is_download) : NULL;
+        download_url = raw_download_url ? pstrdup(raw_download_url) : NULL;
+        file_size = raw_file_size ? pstrdup(raw_file_size) : NULL;
         updated_at = raw_updated_at ? pstrdup(raw_updated_at) : NULL;
 
         if (i > 0)
@@ -125,6 +133,18 @@ pgstar_json_files(void)
         appendStringInfoString(&buf, ",\"is_download\":");
         appendStringInfoString(&buf, (is_download && is_download[0] == 't') ? "true" : "false");
         
+        appendStringInfoString(&buf, ",\"download_url\":");
+        if (download_url)
+            escape_json(&buf, download_url);
+        else
+            appendStringInfoString(&buf, "null");
+        
+        appendStringInfoString(&buf, ",\"file_size\":");
+        if (file_size)
+            appendStringInfoString(&buf, file_size);
+        else
+            appendStringInfoString(&buf, "null");
+        
         appendStringInfoString(&buf, ",\"updated_at\":");
         if (updated_at)
             escape_json(&buf, updated_at);
@@ -136,7 +156,7 @@ pgstar_json_files(void)
         /* The pstrdup() copies ensure the pointers are valid until we use them, but we don't need to free them */
     }
 
-    appendStringInfoString(&buf, "],\"columns\":[\"file_id\",\"file_name\",\"content_type\",\"is_binary\",\"is_custom\",\"is_download\",\"updated_at\"]}\n");
+    appendStringInfoString(&buf, "],\"columns\":[\"file_id\",\"file_name\",\"content_type\",\"is_binary\",\"is_custom\",\"is_download\",\"download_url\",\"file_size\",\"updated_at\"]}\n");
 
     /* Copy result into caller's context before we tear down the transaction context */
     old_ctx = MemoryContextSwitchTo(caller_ctx);

@@ -1127,9 +1127,9 @@ pgstar_ui_fetch_file(const char *file_name,
 					char *downloaded_ct = NULL;
 					char *downloaded_body;
 					bool	store_as_text;
-					Oid		argtypes_upd[4];
-					Datum	values_upd[4];
-					char	nulls_upd[4] = {' ', ' ', ' ', ' '};
+					Oid		argtypes_upd[5];
+					Datum	values_upd[5];
+					char	nulls_upd[5] = {' ', ' ', ' ', ' ', ' '};
 					int		upd_ret;
 
 					elog(pgstar_log_level, "pgstar: attempting download from '%s'", remote_url);
@@ -1158,25 +1158,33 @@ pgstar_ui_fetch_file(const char *file_name,
 							ct_allocated = true;
 						}
 
+						/* Store file_size BEFORE base64 encoding (original downloaded size) */
 						argtypes_upd[0] = TEXTOID;
 						argtypes_upd[1] = BOOLOID;
 						argtypes_upd[2] = TEXTOID;
-						argtypes_upd[3] = TEXTOID;
+						argtypes_upd[3] = INT8OID;
+						argtypes_upd[4] = TEXTOID;
 						values_upd[0] = CStringGetTextDatum(text_data);
 						values_upd[1] = BoolGetDatum(is_binary);
 						values_upd[2] = CStringGetTextDatum(ct ? ct : "application/octet-stream");
-						values_upd[3] = CStringGetTextDatum(file_name);
+						values_upd[3] = Int64GetDatum((int64) downloaded_len);
+						values_upd[4] = CStringGetTextDatum(file_name);
+						nulls_upd[0] = ' ';
+						nulls_upd[1] = ' ';
+						nulls_upd[2] = ' ';
+						nulls_upd[3] = ' ';
+						nulls_upd[4] = ' ';
 
 						upd_ret = SPI_execute_with_args(
 							"UPDATE pgstar.files SET "
 							"text_data = $1, "
-							"download_url = NULL, "
 							"is_binary = $2, "
 							"is_download = FALSE, "
 							"content_type = $3, "
+							"file_size = $4, "
 							"updated_at = now() "
-							"WHERE file_name = $4",
-							4, argtypes_upd, values_upd, nulls_upd,
+							"WHERE file_name = $5",
+							5, argtypes_upd, values_upd, nulls_upd,
 							false, 0);
 						
 						if (upd_ret != SPI_OK_UPDATE)

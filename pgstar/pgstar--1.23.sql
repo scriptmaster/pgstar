@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS pgstar.files (
   is_binary     BOOLEAN NOT NULL DEFAULT FALSE,
   is_custom     BOOLEAN NOT NULL DEFAULT FALSE,
   is_download   BOOLEAN NOT NULL DEFAULT FALSE,
+  file_size     BIGINT,
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   CHECK (
     (is_download = TRUE AND download_url IS NOT NULL) OR
@@ -218,6 +219,82 @@ VALUES (
   'favicon.ico',
   'image/x-icon',
   'https://emeraldai.cloud/favicon.ico',
+  FALSE,
+  TRUE,
+  FALSE
+)
+ON CONFLICT (file_name) DO UPDATE
+SET download_url = EXCLUDED.download_url,
+    text_data = NULL,
+    content_type = EXCLUDED.content_type,
+    is_download = EXCLUDED.is_download,
+    is_binary = EXCLUDED.is_binary,
+    updated_at = now()
+WHERE pgstar.files.is_custom = FALSE;
+
+-- Add Vue.js as downloadable file entry
+INSERT INTO pgstar.files (file_name, content_type, download_url, is_binary, is_download, is_custom)
+VALUES (
+  'js/vue.global.prod.min.js',
+  'application/javascript',
+  'https://cdnjs.cloudflare.com/ajax/libs/vue/3.5.22/vue.global.prod.min.js',
+  FALSE,
+  TRUE,
+  FALSE
+)
+ON CONFLICT (file_name) DO UPDATE
+SET download_url = EXCLUDED.download_url,
+    text_data = NULL,
+    content_type = EXCLUDED.content_type,
+    is_download = EXCLUDED.is_download,
+    is_binary = EXCLUDED.is_binary,
+    updated_at = now()
+WHERE pgstar.files.is_custom = FALSE;
+
+-- Add vue-data-table.js as downloadable file entry (from EmeraldCSS CDN)
+INSERT INTO pgstar.files (file_name, content_type, download_url, is_binary, is_download, is_custom)
+VALUES (
+  'js/vue-data-table.js',
+  'application/javascript',
+  'https://emeraldcss-deno.scriptmaster.deno.net/vue-data-table.js',
+  FALSE,
+  TRUE,
+  FALSE
+)
+ON CONFLICT (file_name) DO UPDATE
+SET download_url = EXCLUDED.download_url,
+    text_data = NULL,
+    content_type = EXCLUDED.content_type,
+    is_download = EXCLUDED.is_download,
+    is_binary = EXCLUDED.is_binary,
+    updated_at = now()
+WHERE pgstar.files.is_custom = FALSE;
+
+-- Add Office UI Fabric CSS as downloadable file entry
+INSERT INTO pgstar.files (file_name, content_type, download_url, is_binary, is_download, is_custom)
+VALUES (
+  'css/fabric.min.css',
+  'text/css',
+  'https://static2.sharepointonline.com/files/fabric/office-ui-fabric-core/11.0.0/css/fabric.min.css',
+  FALSE,
+  TRUE,
+  FALSE
+)
+ON CONFLICT (file_name) DO UPDATE
+SET download_url = EXCLUDED.download_url,
+    text_data = NULL,
+    content_type = EXCLUDED.content_type,
+    is_download = EXCLUDED.is_download,
+    is_binary = EXCLUDED.is_binary,
+    updated_at = now()
+WHERE pgstar.files.is_custom = FALSE;
+
+-- Add Pico CSS as downloadable file entry
+INSERT INTO pgstar.files (file_name, content_type, download_url, is_binary, is_download, is_custom)
+VALUES (
+  'css/pico.classless.min.css',
+  'text/css',
+  'https://cdn.jsdelivr.net/npm/@picocss/pico@2.1.1/css/pico.classless.min.css',
   FALSE,
   TRUE,
   FALSE
@@ -529,9 +606,9 @@ VALUES (
   'css/pages_index.css',
   '',
   '/* pgstar default CSS bundle */
-   @import url("https://static2.sharepointonline.com/files/fabric/office-ui-fabric-core/11.0.0/css/fabric.min.css");
+   @import url("/static/css/fabric.min.css");
    @import url("/static/css/emerald-v2.css");
-   @import url("https://cdn.jsdelivr.net/npm/@picocss/pico@2.1.1/css/pico.classless.min.css");
+   @import url("/static/css/pico.classless.min.css");
 ',
   'text/css; charset=utf-8',
   '[]'::jsonb,
@@ -663,7 +740,7 @@ VALUES (
 ',
   'text/html; charset=utf-8',
   '[]'::jsonb,
-  'https://cdnjs.cloudflare.com/ajax/libs/vue/3.5.22/vue.global.prod.min.js,https://emeraldcss-deno.scriptmaster.deno.net/vue-data-table.js',
+  'vue.global.prod.min.js,vue-data-table.js',
   '',
   FALSE
 )
