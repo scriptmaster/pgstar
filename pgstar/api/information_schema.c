@@ -13,6 +13,9 @@ pgstar_json_schemata(void)
 {
     int             ret;
     StringInfoData  buf;
+    MemoryContext   caller_ctx = CurrentMemoryContext;
+    MemoryContext   old_ctx;
+    char           *result_json;
 
     SetCurrentStatementStartTimestamp();
     StartTransactionCommand();
@@ -54,11 +57,17 @@ pgstar_json_schemata(void)
 
     appendStringInfoString(&buf, "]\n");
 
+    old_ctx = MemoryContextSwitchTo(caller_ctx);
+    result_json = pstrdup(buf.data);
+    MemoryContextSwitchTo(old_ctx);
+
     SPI_finish();
     PopActiveSnapshot();
     CommitTransactionCommand();
 
-    return buf.data;   /* palloc'd */
+    pfree(buf.data);
+
+    return result_json;
 }
 
 char *
@@ -66,6 +75,9 @@ pgstar_json_tables(void)
 {
     int             ret;
     StringInfoData  buf;
+    MemoryContext   caller_ctx = CurrentMemoryContext;
+    MemoryContext   old_ctx;
+    char           *result_json;
 
     SetCurrentStatementStartTimestamp();
     StartTransactionCommand();
@@ -113,9 +125,15 @@ pgstar_json_tables(void)
 
     appendStringInfoString(&buf, "],\"columns\":[\"table_schema\",\"table_name\"]}\n");
 
+    old_ctx = MemoryContextSwitchTo(caller_ctx);
+    result_json = pstrdup(buf.data);
+    MemoryContextSwitchTo(old_ctx);
+
     SPI_finish();
     PopActiveSnapshot();
     CommitTransactionCommand();
 
-    return buf.data;   /* palloc'd */
+    pfree(buf.data);
+
+    return result_json;
 }
