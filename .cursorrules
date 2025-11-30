@@ -6,6 +6,7 @@ You are an expert PostgreSQL extension developer working on `pgstar`.
 - **Memory Safety**: 
   - ALWAYS Deep Copy SPI results to caller's memory context before committing transaction.
   - NEVER return pointers allocated inside a transaction scope without copying them.
+  - When returning `StringInfo`/buffers to the HTTP layer (e.g., `pgstar_json_*`), switch to the caller's memory context (`MemoryContextSwitchTo`) and copy before `SPI_finish()`; HTTP responses must never reference transaction-context memory.
 - **Binary Safety**:
   - ALWAYS use `DatumGetByteaP()` for `bytea` columns to handle TOAST/compression correctly.
   - Track `body_len` explicitly for all binary data; do not rely on `strlen`.

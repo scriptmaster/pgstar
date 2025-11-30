@@ -23,6 +23,7 @@ PostgreSQL uses a hierarchical memory context system.
      - Strings: `pstrdup` 
      - Binary: `palloc` + `memcpy`
      - **Do this before** `SPI_finish()` or `CommitTransactionCommand()`.
+     - When returning `StringInfo` buffers to higher layers (HTTP/JSON helpers), explicitly `MemoryContextSwitchTo(old)` before copying so the final response lives in the caller's context.
   5. Commit: `CommitTransactionCommand()` (or `AbortCurrentTransaction()` on error).
 
 ### 2. Binary Data Handling (CRITICAL)
@@ -58,5 +59,6 @@ PostgreSQL uses a hierarchical memory context system.
 
 ## Recent Issues & Fixes
 - **JSON API returning Integers**: Caused by returning `buf.data` (from `StringInfo`) which was allocated in the transaction context. Fixed by `pstrdup`ing the result before `SPI_finish`.
+- **HTTP JSON responses crashing worker**: `pgstar_json_files()` returned `buf.data` from the SPI context; after `SPI_finish()` the pointer was freed, leading to segfaults under load. Fix: switch to the caller's memory context and copy the JSON string before finishing SPI.
 - **Intermittent Crashes on Download**: Caused by `CommitTransactionCommand()` in `PG_CATCH` block (illegal state). Fixed by using `AbortCurrentTransaction()`.
 - **Broken Binary Data**: Caused by casting TOASTed `datum` directly. Fixed by using `DatumGetByteaP()`.
