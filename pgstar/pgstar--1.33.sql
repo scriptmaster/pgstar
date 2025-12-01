@@ -109,7 +109,7 @@ WHERE pgstar.files.is_custom = FALSE;
 -- Add Vue data-table component
 INSERT INTO pgstar.files (file_name, content_type, text_data, is_binary, is_custom)
 VALUES (
-  'js/vue-data-table.js',
+  'js/pgstar-vue-global-app.js',
   'application/javascript',
   $$const { createApp } = Vue;
 
@@ -122,6 +122,12 @@ const app = createApp({
             if (path.endsWith('/jobs')) return '/api/jobs';
             // Default to information schema tables
             return '/api/information_schema/tables';
+        },
+        currentView() {
+            const path = window.location.pathname.replace(/^\/+|\/+$/g, '');
+            if (path === 'app') return 'dashboard';
+            if (path === 'ai') return 'ai';
+            return 'table';
         }
     }
 });
@@ -201,6 +207,16 @@ app.component('data-table-grid', {
     }
 });
 
+// Register dashboard component
+app.component('dashboard', {
+  template: '<div class="p-2"><h2>Dashboard</h2><p>No dashboard content configured for your user yet. Please contact your administrator.</p></div>'
+});
+
+// Register ai component
+app.component('ai', {
+  template: '<div class="p-2"><h2>AI</h2><p>No AI agents configured for your user yet. Please contact your administrator.</p></div>'
+});
+
 app.mount('#app');
 console.log('Vue app mounted');
 $$,
@@ -250,26 +266,6 @@ SET download_url = EXCLUDED.download_url,
     is_binary = EXCLUDED.is_binary,
     updated_at = now()
 WHERE pgstar.files.is_custom = FALSE;
-
--- Add vue-data-table.js as downloadable file entry (from EmeraldCSS CDN)
-INSERT INTO pgstar.files (file_name, content_type, download_url, is_binary, is_download, is_custom)
-VALUES (
-  'js/vue-data-table.js',
-  'application/javascript',
-  'https://emeraldcss-deno.scriptmaster.deno.net/vue-data-table.js',
-  FALSE,
-  TRUE,
-  FALSE
-)
-ON CONFLICT (file_name) DO UPDATE
-SET download_url = EXCLUDED.download_url,
-    text_data = NULL,
-    content_type = EXCLUDED.content_type,
-    is_download = EXCLUDED.is_download,
-    is_binary = EXCLUDED.is_binary,
-    updated_at = now()
-WHERE pgstar.files.is_custom = FALSE;
-
 -- Add Office UI Fabric CSS as downloadable file entry
 INSERT INTO pgstar.files (file_name, content_type, download_url, is_binary, is_download, is_custom)
 VALUES (
@@ -680,11 +676,13 @@ INSERT INTO pgstar.pages (page_name, parent_tag, html, content_type, meta, js, c
 VALUES (
   'dashboard',
   '',
-  '<div id="app">
-    <section class="panel">
+  '
+<div id="app">
+  <section class="panel">
     <aside>
-        <ul class="tree-view has-connector has-collapse-button has-container has-scrollbar">
+      <ul class="tree-view has-connector has-collapse-button has-container has-scrollbar">
         <li><a href="/app/">Dashboard</a></li>
+        <li><a href="/ai/">Sher AI</a></li>
         <li>
           <a href="/app/tables">Tables</a>
           <ul>
@@ -696,8 +694,24 @@ VALUES (
       </ul>
     </aside>
     <main>
-      <section class="titlebar">
-        <ul role="menubar">
+      <section class="titlebar d-flex">
+        <a class="bg-100 text-A700 px-2 d-flex align-items-center" href="/">PGStar</a>
+        <ul class="flex-1" role="menubar" v-if="currentView === ''dashboard''" id="dashboard-menubar">
+          <li role="menuitem" tabindex="0">
+            ➕ Add to Dashboard
+            <ul role="menu">
+              <li role="menuitem" tabindex="0"><a href="#add-chart">Chart</a></li>
+              <li role="menuitem" tabindex="0"><a href="#add-tableview">TableView</a></li>
+              <li role="menuitem" tabindex="0"><a href="#add-metric">Metric</a></li>
+              <li role="menuitem" tabindex="0"><a href="#add-map">Map</a></li>
+              <li role="menuitem" tabindex="0"><a href="#import-dashboard">Import dashboard</a></li>
+            </ul>
+          </li>
+        </ul>
+        <ul class="flex-1" role="menubar" v-if="currentView === ''ai''" id="ai-menubar">
+          <li role="menuitem" tabindex="0">Sher AI</li>
+        </ul>
+        <ul class="flex-1" role="menubar" v-if="currentView === ''table''">
           <li role="menuitem" tabindex="0">Create</li>
           <li role="menuitem" tabindex="0">Read</li>
           <li role="menuitem" tabindex="0">Update</li>
@@ -709,38 +723,40 @@ VALUES (
           </div>
         </ul>
       </section>
-      <div class="window-body m-0">
-          <data-table-grid :src="currentTableSrc"></data-table-grid>
-        </div>
-      </main>
-    </section>
-  </div>
-    
-  <template id="data-table-template">
-      <div v-if="loading">
-        <p>Loading data...</p>
+      <div class="window-body m-0 mb-4 has-scrollbar overflow-auto">
+        <dashboard v-if="currentView === ''dashboard''"></dashboard>
+        <ai v-else-if="currentView === ''ai''"></ai>
+        <data-table-grid v-else :src="currentTableSrc"></data-table-grid>
       </div>
-      <div v-else-if="error" class="error">Error: {{ error }}</div>
-      <table v-else>
-        <thead>
-          <tr>
-            <th v-for="col in columns" :key="col">{{ humanize(col) }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="(row, idx) in rows" :key="idx">
-            <td v-for="col in columns" :key="col">
-              <span v-if="!isObject(row[col])">{{ row[col] }}</span>
-              <pre v-else>{{ JSON.stringify(row[col], null, 2) }}</pre>
-            </td>
-          </tr>
-        </tbody>
-        </table>
-    </template>
+    </main>
+  </section>
+</div>
+
+<template id="data-table-template">
+  <div v-if="loading">
+    <p>Loading data...</p>
+  </div>
+  <div v-else-if="error" class="error">Error: {{ error }}</div>
+  <table v-else>
+    <thead>
+      <tr>
+        <th v-for="col in columns" :key="col">{{ humanize(col) }}</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr v-for="(row, idx) in rows" :key="idx">
+        <td v-for="col in columns" :key="col">
+          <span v-if="!isObject(row[col])">{{ row[col] }}</span>
+          <pre v-else>{{ JSON.stringify(row[col], null, 2) }}</pre>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</template>
 ',
   'text/html; charset=utf-8',
   '[]'::jsonb,
-  'vue.global.prod.min.js,vue-data-table.js',
+  'vue.global.prod.min.js,pgstar-vue-global-app.js',
   '',
   FALSE
 )

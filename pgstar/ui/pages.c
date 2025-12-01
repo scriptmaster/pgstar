@@ -139,6 +139,20 @@ pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 		pgstar_build_title_from_path(path, title_buf, sizeof(title_buf));
 		title_override = title_buf;
 	}
+	else if (strcmp(path, "/ai") == 0 || strcmp(path, "/ai/") == 0)
+	{
+		strlcpy(page_name, default_page_name, sizeof(page_name));
+		title_override = "PGSTAR: Sher AI";
+	}
+	else if (strncmp(path, "/ai/", 4) == 0)
+	{
+		/* All /ai/ paths use the dashboard page */
+		strlcpy(page_name, default_page_name, sizeof(page_name));
+		
+		/* Build title from path segments */
+		pgstar_build_title_from_path(path, title_buf, sizeof(title_buf));
+		title_override = title_buf;
+	}
 	else
 	{
 		resp->status_code = 404;

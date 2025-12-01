@@ -81,10 +81,11 @@ pgstar_route_request(const PgstarRequest *req, PgstarResponse *resp)
 		return;
 	}
 	else
-	/* /ai/ is delegated to the AI router; methods are not restricted here */
-	if (strncmp(req->path, "/ai/", 4) == 0)
+	/* /ai/ paths are handled by the UI pages router (same as /app/) */
+	if (strncmp(req->path, "/ai/", 4) == 0 ||
+		strcmp(req->path, "/ai") == 0)
 	{
-		pgstar_route_ai(req, resp);
+		pgstar_route_ui_pages(req, resp);
 		return;
 	}
 	else

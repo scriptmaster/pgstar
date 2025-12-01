@@ -13,7 +13,7 @@ const char *pgstar_root_html =
 "  <body>\n"
 "    <main>\n"
 "      <h1>PGStar</h1>\n"
-"      <h4>World's first AI powered Fullstack-SQL Framework and Data Science tool!</h4><h5>From: PGSTAR(PG_SQL + API + Auth) ➡️ To: PostgreSQL/Any/Multi-Tenant Databases.</h5>\n"
+"      <h4>World's first AI powered Fullstack-SQL Framework and Data Science tool!</h4><h5>From: PGSTAR (SQL + API + Auth) ➡️ To: PostgreSQL/Any/Multi-Tenant Databases.</h5>\n"
 "      <p><a href=\"/app/\">Enter Web-based Data Science UI</a></p>\n"
 "    </main>\n"
 "    <footer>pgstar/v" PGSTAR_VERSION_STRING " Rights Reserved.</footer>\n"
