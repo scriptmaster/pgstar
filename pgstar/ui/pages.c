@@ -130,6 +130,11 @@ pgstar_route_ui_pages(const PgstarRequest *req, PgstarResponse *resp)
 		strlcpy(page_name, default_page_name, sizeof(page_name));
 		title_override = "App Dashboard - PGSTAR App UI";
 	}
+	else if (strcmp(path, "/app/connections") == 0 || strcmp(path, "/app/connections/") == 0)
+	{
+		strlcpy(page_name, default_page_name, sizeof(page_name));
+		title_override = "PGStar: Multi-tenant Connections";
+	}
 	else if (strncmp(path, "/app/", 5) == 0)
 	{
 		/* All /app/ paths use the dashboard page */

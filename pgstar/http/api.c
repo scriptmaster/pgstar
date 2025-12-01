@@ -20,6 +20,9 @@ static void pgstar_api_generic_table(const PgstarRequest *req,
 									 int nseg, const char *segs[],
 									 PgstarResponse *resp);
 static void pgstar_api_exec(const PgstarRequest *req, PgstarResponse *resp);
+static void pgstar_api_connections(const PgstarRequest *req,
+								   int nseg, const char *segs[],
+								   PgstarResponse *resp);
 static void pgstar_api_build_select_list(const char *query, StringInfo select_list);
 static void pgstar_json_append_tuple(StringInfo buf, TupleDesc tupdesc,
 									 HeapTuple tuple);
@@ -94,6 +97,13 @@ pgstar_route_api(const PgstarRequest *req, PgstarResponse *resp)
 			resp->body = pstrdup("{\"error\":\"files query failed\"}\n");
 		}
 		PG_END_TRY();
+		return;
+	}
+
+	/* /api/pgstar/connections endpoint - special handling for POST/PUT */
+	if (nseg >= 3 && strcmp(segs[1], "pgstar") == 0 && strcmp(segs[2], "connections") == 0)
+	{
+		pgstar_api_connections(req, nseg, segs, resp);
 		return;
 	}
 
@@ -655,4 +665,25 @@ pgstar_api_build_select_list(const char *query, StringInfo select_list)
 			appendStringInfoChar(select_list, ch);
 		}
 	}
+}
+
+static void
+pgstar_api_connections(const PgstarRequest *req,
+					   int nseg, const char *segs[],
+					   PgstarResponse *resp)
+{
+	/* GET requests are handled by the generic table handler */
+	/* POST and PUT need special handling - for now return method not allowed */
+	/* TODO: Implement POST/PUT for connections */
+	if (pg_strcasecmp(req->method, "POST") == 0 || pg_strcasecmp(req->method, "PUT") == 0)
+	{
+		resp->status_code = 501;
+		resp->status_text = "Not Implemented";
+		resp->content_type = "application/json";
+		resp->body = pstrdup("{\"error\":\"POST/PUT for connections not yet implemented. Use /api/exec endpoint for now.\"}\n");
+		return;
+	}
+	
+	/* Fall through to generic handler for GET */
+	pgstar_api_generic_table(req, nseg, segs, resp);
 }

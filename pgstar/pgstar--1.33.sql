@@ -114,6 +114,26 @@ VALUES (
   $$const { createApp } = Vue;
 
 const app = createApp({
+    data() {
+        return {
+            showConnectionModal: false,
+            editingConnection: null
+        };
+    },
+    methods: {
+        showAddConnection() {
+            this.editingConnection = null;
+            this.showConnectionModal = true;
+        },
+        showEditConnection(connection) {
+            this.editingConnection = connection;
+            this.showConnectionModal = true;
+        },
+        closeConnectionModal() {
+            this.showConnectionModal = false;
+            this.editingConnection = null;
+        }
+    },
     computed: {
         currentTableSrc() {
             const path = window.location.pathname;
@@ -127,6 +147,7 @@ const app = createApp({
             const path = window.location.pathname.replace(/^\/+|\/+$/g, '');
             if (path === 'app') return 'dashboard';
             if (path === 'ai') return 'ai';
+            if (path.startsWith('app/connections')) return 'connections';
             return 'table';
         }
     }
@@ -215,6 +236,149 @@ app.component('dashboard', {
 // Register ai component
 app.component('ai', {
   template: '<div class="p-2"><h2>AI</h2><p>No AI agents configured for your user yet. Please contact your administrator.</p></div>'
+});
+
+// Register connections component
+app.component('connections', {
+  template: `
+    <div class="p-2">
+      <data-table-grid 
+        src="/api/pgstar/connections" 
+        @row-click="handleRowClick">
+      </data-table-grid>
+      <connection-modal 
+        v-if="$root.showConnectionModal"
+        :connection="$root.editingConnection"
+        @close="$root.closeConnectionModal"
+        @save="handleSave">
+      </connection-modal>
+    </div>
+  `,
+  methods: {
+    handleRowClick(row) {
+      this.$root.showEditConnection(row);
+    },
+    handleSave(connectionData) {
+      // Save logic will be handled by the modal component
+      this.$root.closeConnectionModal();
+      // Refresh the table
+      const tableComponent = this.$children.find(c => c.$options.name === 'data-table-grid');
+      if (tableComponent) {
+        tableComponent.fetchData();
+      }
+    }
+  }
+});
+
+// Register connection modal component
+app.component('connection-modal', {
+  props: ['connection'],
+  template: `
+    <div class="modal-overlay" @click.self="$emit(''close'')" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000;">
+      <div class="modal-content" style="background: white; padding: 2rem; border-radius: 8px; max-width: 500px; width: 90%;">
+        <h2>{{ connection ? ''Edit Connection'' : ''Add Connection'' }}</h2>
+        <form @submit.prevent="handleSubmit">
+          <div style="margin-bottom: 1rem;">
+            <label>Name:</label>
+            <input v-model="formData.name" required style="width: 100%; padding: 0.5rem;" />
+          </div>
+          <div style="margin-bottom: 1rem;">
+            <label>FDW Type:</label>
+            <select v-model="formData.fdw_type" required style="width: 100%; padding: 0.5rem;">
+              <option value="postgres_fdw">postgres_fdw</option>
+              <option value="tds_fdw">tds_fdw</option>
+              <option value="mysql_fdw">mysql_fdw</option>
+            </select>
+          </div>
+          <div style="margin-bottom: 1rem;">
+            <label>Host:</label>
+            <input v-model="formData.host" required style="width: 100%; padding: 0.5rem;" />
+          </div>
+          <div style="margin-bottom: 1rem;">
+            <label>Port:</label>
+            <input v-model="formData.port" type="number" required style="width: 100%; padding: 0.5rem;" />
+          </div>
+          <div style="margin-bottom: 1rem;">
+            <label>Database Name:</label>
+            <input v-model="formData.db_name" required style="width: 100%; padding: 0.5rem;" />
+          </div>
+          <div style="margin-bottom: 1rem;">
+            <label>User:</label>
+            <input v-model="formData.user" required style="width: 100%; padding: 0.5rem;" />
+          </div>
+          <div style="margin-bottom: 1rem;">
+            <label>Password (Base64):</label>
+            <input v-model="formData.pass_b64" type="password" style="width: 100%; padding: 0.5rem;" />
+          </div>
+          <div style="margin-bottom: 1rem;">
+            <label>FDW Version (optional):</label>
+            <input v-model="formData.fdw_version" style="width: 100%; padding: 0.5rem;" />
+          </div>
+          <div style="display: flex; gap: 1rem; justify-content: flex-end;">
+            <button type="button" @click="$emit(''close'')" style="padding: 0.5rem 1rem;">Cancel</button>
+            <button type="submit" style="padding: 0.5rem 1rem;">Save</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `,
+  data() {
+    return {
+      formData: {
+        name: '',
+        fdw_type: 'postgres_fdw',
+        host: '',
+        port: '',
+        db_name: '',
+        user: '',
+        pass_b64: '',
+        fdw_version: ''
+      }
+    };
+  },
+  watch: {
+    connection: {
+      immediate: true,
+      handler(newVal) {
+        if (newVal) {
+          this.formData = { ...newVal };
+        } else {
+          this.formData = {
+            name: '',
+            fdw_type: 'postgres_fdw',
+            host: '',
+            port: '',
+            db_name: '',
+            user: '',
+            pass_b64: '',
+            fdw_version: ''
+          };
+        }
+      }
+    }
+  },
+  methods: {
+    async handleSubmit() {
+      const url = this.connection 
+        ? `/api/pgstar/connections/${this.connection.id}`
+        : '/api/pgstar/connections';
+      const method = this.connection ? 'PUT' : 'POST';
+      
+      try {
+        const response = await fetch(url, {
+          method: method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(this.formData)
+        });
+        
+        if (!response.ok) throw new Error('Save failed');
+        
+        this.$emit('save', this.formData);
+      } catch (error) {
+        alert('Error saving connection: ' + error.message);
+      }
+    }
+  }
 });
 
 app.mount('#app');
@@ -691,6 +855,7 @@ VALUES (
               <li><a href="/app/tables/jobs">Jobs</a></li>
           </ul>
         </li>
+        <li><a href="/app/connections">Connections</a></li>
       </ul>
     </aside>
     <main>
@@ -711,6 +876,9 @@ VALUES (
         <ul class="flex-1" role="menubar" v-if="currentView === ''ai''" id="ai-menubar">
           <li role="menuitem" tabindex="0">Sher AI</li>
         </ul>
+        <ul class="flex-1" role="menubar" v-if="currentView === ''connections''" id="connections-menubar">
+          <li role="menuitem" tabindex="0" @click="showAddConnection">➕ Add Connection</li>
+        </ul>
         <ul class="flex-1" role="menubar" v-if="currentView === ''table''">
           <li role="menuitem" tabindex="0">Create</li>
           <li role="menuitem" tabindex="0">Read</li>
@@ -726,6 +894,7 @@ VALUES (
       <div class="window-body m-0 mb-4 has-scrollbar overflow-auto">
         <dashboard v-if="currentView === ''dashboard''"></dashboard>
         <ai v-else-if="currentView === ''ai''"></ai>
+        <connections v-else-if="currentView === ''connections''"></connections>
         <data-table-grid v-else :src="currentTableSrc"></data-table-grid>
       </div>
     </main>
@@ -744,7 +913,7 @@ VALUES (
       </tr>
     </thead>
     <tbody>
-      <tr v-for="(row, idx) in rows" :key="idx">
+      <tr v-for="(row, idx) in rows" :key="idx" @click="$emit(''row-click'', row)" style="cursor: pointer;">
         <td v-for="col in columns" :key="col">
           <span v-if="!isObject(row[col])">{{ row[col] }}</span>
           <pre v-else>{{ JSON.stringify(row[col], null, 2) }}</pre>
@@ -770,3 +939,18 @@ SET parent_tag   = EXCLUDED.parent_tag,
     updated_at   = now()
 WHERE pgstar.pages.is_custom = FALSE;
 
+
+-- Create pgstar.connections table
+CREATE TABLE IF NOT EXISTS pgstar.connections (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    fdw_type TEXT NOT NULL DEFAULT 'postgres_fdw' CHECK (fdw_type IN ('postgres_fdw', 'tds_fdw', 'mysql_fdw')),
+    host TEXT NOT NULL,
+    port INTEGER NOT NULL,
+    db_name TEXT NOT NULL,
+    "user" TEXT NOT NULL,
+    pass_b64 TEXT NOT NULL,
+    fdw_version TEXT DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
