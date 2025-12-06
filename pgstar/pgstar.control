@@ -1,4 +1,4 @@
 comment = 'PGStar: Worlds first AI powered Fullstack-SQL Framework and Data Science tool!'
-default_version = '1.33'
+default_version = '1.70'
 relocatable = true
 module_pathname = '$libdir/pgstar'

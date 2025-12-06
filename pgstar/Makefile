@@ -1,5 +1,5 @@
 EXTENSION = pgstar
-DATA = pgstar--1.33.sql
+DATA = pgstar--1.70.sql
 PGFILEDESC = "pgstar - postgres web server"
 
 MODULE_big = pgstar
@@ -10,7 +10,7 @@ OBJS = main.o \
        http/ai.o http/api.o http/client.o http/request.o http/response.o \
        http/route_pgstar.o http/router.o http/static.o http/uri.o http/v1.o \
        functions/pgstar_http_get.o functions/pgstar_http_post.o functions/pgstar_jobs.o \
-       ui/css_links.o ui/js_scripts.o ui/meta_tags.o ui/pages.o ui/pages_layout.o ui/root_page.o \
+       ui/bundler.o ui/css_links.o ui/js_scripts.o ui/meta_tags.o ui/pages.o ui/pages_layout.o ui/root_page.o \
        ai/chat.o ai/convert.o ai/models_local.o ai/models_ui.o
 
 PG_CONFIG = pg_config

@@ -12,6 +12,7 @@ extern int pgstar_log_level;
 extern char *pgstar_database;
 extern char *pgstar_user;
 extern int pgstar_ui_cache_ttl;
+extern char *pgstar_frontend_path;
 
 void pgstar_define_gucs(void);
 
@@ -79,6 +80,9 @@ void pgstar_ui_ensure_pages(void);
 bool pgstar_ui_fetch_file(const char *file_name, char **body, size_t *body_len, const char **content_type);
 void pgstar_route_ui_favicon(const PgstarRequest *req, PgstarResponse *resp);
 extern const char *pgstar_root_html;
+
+/* Bundler */
+void pgstar_route_bundle(const PgstarRequest *req, PgstarResponse *resp);
 
 /* HTTP Client */
 char *pgstar_http_download(const char *url, size_t *len, char **content_type);

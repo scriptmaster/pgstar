@@ -1,0 +1,11 @@
+{
+  "app.js": [
+    "components/header.js",
+    "components/footer.js",
+    "components/main.js"
+  ],
+  "vendor.js": [
+    "components/utils.js",
+    "components/helpers.js"
+  ]
+}

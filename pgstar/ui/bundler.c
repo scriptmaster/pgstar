@@ -19,6 +19,9 @@ static PgstarBundleEntry *pgstar_bundles = NULL;
 static bool pgstar_bundles_initialized = false;
 static time_t pgstar_bundle_json_mtime = 0;
 static char *pgstar_bundle_json_path = NULL;
+static time_t pgstar_bundles_last_check = 0;
+/* Cache of all file mtimes (bundle.json + all component files) */
+static PgstarFileMtimeEntry *pgstar_file_mtimes = NULL;
 
 /* Forward declarations */
 static void pgstar_bundler_load_bundle_json(const char *frontend_path);
@@ -29,7 +32,9 @@ static void pgstar_bundler_trim_whitespace(char *str);
 static bool pgstar_bundler_parse_json_string(const char **json, char *out, size_t out_len);
 static bool pgstar_bundler_parse_json_array(const char **json, StringInfoData *files);
 static void pgstar_bundler_clear_cache(void);
-static bool pgstar_bundler_check_files_changed(const char *frontend_path, const PgstarBundleEntry *bundles);
+static void pgstar_bundler_clear_mtime_cache(void);
+static void pgstar_bundler_add_file_mtime(const char *file_path, time_t mtime);
+static bool pgstar_bundler_check_files_changed(void);
 
 /*
  * Initialize bundles at startup - called from worker initialization
@@ -98,8 +103,6 @@ pgstar_bundler_load_bundle_json(const char *frontend_path)
 	/* Build path to bundle.json */
 	bundle_json_path = pgstar_bundler_build_path(frontend_path, "bundle.json");
 
-	elog(pgstar_log_level, "pgstar: checking for bundle.json at: %s", bundle_json_path);
-
 	if (!pgstar_file_exists(bundle_json_path))
 	{
 		elog(WARNING, "pgstar: bundle.json not found at %s, skipping bundle initialization", bundle_json_path);
@@ -109,20 +112,25 @@ pgstar_bundler_load_bundle_json(const char *frontend_path)
 		return;
 	}
 
-	elog(pgstar_log_level, "pgstar: loading bundles from %s", bundle_json_path);
-
 	/* Store bundle.json path and mtime for change detection */
 	if (pgstar_bundle_json_path != NULL)
 		pgstar_safe_pfree(pgstar_bundle_json_path);
 	pgstar_bundle_json_path = pstrdup(bundle_json_path);
 	pgstar_bundle_json_mtime = pgstar_file_mtime(bundle_json_path);
+	
+	/* Clear old mtime cache and add bundle.json */
+	pgstar_bundler_clear_mtime_cache();
+	pgstar_bundler_add_file_mtime(bundle_json_path, pgstar_bundle_json_mtime);
 
 	/* Switch to TopMemoryContext for bundle storage */
 	old_ctx = MemoryContextSwitchTo(TopMemoryContext);
 
 	/* Clear old cache if reloading */
 	if (pgstar_bundles != NULL)
+	{
 		pgstar_bundler_clear_cache();
+		pgstar_bundler_clear_mtime_cache();
+	}
 
 	/* Parse bundle.json and create bundle entries - pass frontend_path directly */
 	entry = pgstar_bundler_parse_bundle_json(bundle_json_path, frontend_path);
@@ -137,9 +145,9 @@ pgstar_bundler_load_bundle_json(const char *frontend_path)
 		for (e = entry; e != NULL; e = e->next)
 			bundle_count++;
 		
-		elog(pgstar_log_level, "pgstar: loaded %d bundle(s) successfully", bundle_count);
+		elog(DEBUG1, "pgstar: loaded %d bundle(s)", bundle_count);
 		for (e = entry; e != NULL; e = e->next)
-			elog(pgstar_log_level, "pgstar:   - bundle '%s' (%zu bytes)", e->bundle_name, e->content_len);
+			elog(DEBUG1, "pgstar:   - bundle '%s' (%zu bytes)", e->bundle_name, e->content_len);
 	}
 	else
 	{
@@ -157,7 +165,6 @@ pgstar_bundler_load_bundle_json(const char *frontend_path)
 static PgstarBundleEntry *
 pgstar_bundler_parse_bundle_json(const char *json_path, const char *frontend_path)
 {
-	FILE	   *file;
 	char	   *json_content;
 	const char *cursor;
 	PgstarBundleEntry *head = NULL;
@@ -172,8 +179,6 @@ pgstar_bundler_parse_bundle_json(const char *json_path, const char *frontend_pat
 	}
 
 	elog(DEBUG1, "pgstar: read bundle.json, length: %zu", strlen(json_content));
-
-	elog(pgstar_log_level, "pgstar: frontend path: %s", frontend_path);
 
 	/* Parse JSON manually - simple format: { "key": ["val1", "val2"], ... } */
 	cursor = json_content;
@@ -258,7 +263,6 @@ pgstar_bundler_parse_bundle_json(const char *json_path, const char *frontend_pat
 		{
 			char	   *filepath;
 			char	   *file_content;
-			const char *relative_path;
 
 			pgstar_bundler_trim_whitespace(file_token);
 
@@ -274,9 +278,16 @@ pgstar_bundler_parse_bundle_json(const char *json_path, const char *frontend_pat
 			file_content = pgstar_bundler_read_file(filepath);
 			if (file_content != NULL)
 			{
+				time_t		file_mtime;
+				
 				appendStringInfoString(&bundle_content, file_content);
 				appendStringInfoChar(&bundle_content, '\n'); /* add newline between files */
 				pgstar_safe_pfree(file_content);
+				
+				/* Cache file mtime for change detection */
+				file_mtime = pgstar_file_mtime(filepath);
+				if (file_mtime > 0)
+					pgstar_bundler_add_file_mtime(filepath, file_mtime);
 			}
 			else
 			{
@@ -302,7 +313,7 @@ pgstar_bundler_parse_bundle_json(const char *json_path, const char *frontend_pat
 			*tail = entry;
 			tail = &entry->next;
 
-			elog(pgstar_log_level, "pgstar: created bundle '%s' (%zu bytes)", bundle_name, entry->content_len);
+			elog(DEBUG1, "pgstar: created bundle '%s' (%zu bytes)", bundle_name, entry->content_len);
 		}
 		else
 		{
@@ -687,171 +698,157 @@ pgstar_bundler_clear_cache(void)
 }
 
 /*
- * Check if bundle.json or any component files have changed
+ * Clear mtime cache
+ */
+static void
+pgstar_bundler_clear_mtime_cache(void)
+{
+	PgstarFileMtimeEntry *entry;
+	PgstarFileMtimeEntry *next;
+
+	if (pgstar_file_mtimes == NULL)
+		return;
+
+	/* Free all entries - they're in TopMemoryContext */
+	for (entry = pgstar_file_mtimes; entry != NULL; entry = next)
+	{
+		next = entry->next;
+		/* file_path is in TopMemoryContext, will be freed when context is reset */
+	}
+
+	pgstar_file_mtimes = NULL;
+}
+
+/*
+ * Add a file mtime to the cache
+ */
+static void
+pgstar_bundler_add_file_mtime(const char *file_path, time_t mtime)
+{
+	PgstarFileMtimeEntry *entry;
+	MemoryContext old_ctx;
+
+	if (file_path == NULL || mtime == 0)
+		return;
+
+	/* Allocate in TopMemoryContext */
+	old_ctx = MemoryContextSwitchTo(TopMemoryContext);
+
+	entry = (PgstarFileMtimeEntry *) palloc(sizeof(PgstarFileMtimeEntry));
+	entry->file_path = pstrdup(file_path);
+	entry->mtime = mtime;
+	entry->next = pgstar_file_mtimes;
+	pgstar_file_mtimes = entry;
+
+	MemoryContextSwitchTo(old_ctx);
+
+	elog(DEBUG1, "pgstar: cached mtime for %s: %ld", file_path, (long) mtime);
+}
+
+/*
+ * Check if any cached files have changed by comparing current mtimes with cached mtimes
  * Returns true if reload is needed
  */
 static bool
-pgstar_bundler_check_files_changed(const char *frontend_path, const PgstarBundleEntry *bundles)
+pgstar_bundler_check_files_changed(void)
 {
-	char	   *bundle_json_path;
-	time_t		current_json_mtime;
-	char	   *json_content;
-	const char *cursor;
-	char		components_dir[1024];
-	StringInfoData components_path;
-	StringInfoData file_list;
-	char	   *file_token;
-	char	   *saveptr = NULL;
+	PgstarFileMtimeEntry *entry;
+	time_t		current_mtime;
 	bool		needs_reload = false;
+	int			checked_count = 0;
+	int			changed_count = 0;
 
-	/* Check bundle.json modification time first */
-	bundle_json_path = pgstar_bundler_build_path(frontend_path, "bundle.json");
-	current_json_mtime = pgstar_file_mtime(bundle_json_path);
-
-	if (current_json_mtime == 0)
+	if (pgstar_file_mtimes == NULL)
 	{
-		/* bundle.json doesn't exist - no need to reload */
-		pgstar_safe_pfree(bundle_json_path);
+		elog(DEBUG1, "pgstar: no files in mtime cache, skipping check");
 		return false;
 	}
 
-	if (current_json_mtime != pgstar_bundle_json_mtime)
+	/* Iterate through all cached files and check if any have changed */
+	for (entry = pgstar_file_mtimes; entry != NULL && !needs_reload; entry = entry->next)
 	{
-		elog(DEBUG1, "pgstar: bundle.json changed (old: %ld, new: %ld)", 
-			 (long) pgstar_bundle_json_mtime, (long) current_json_mtime);
-		pgstar_safe_pfree(bundle_json_path);
-		return true;
+		current_mtime = pgstar_file_mtime(entry->file_path);
+
+		checked_count++;
+
+		if (current_mtime == 0)
+		{
+			elog(DEBUG1, "pgstar: file no longer exists: %s (was: %ld)", 
+				 entry->file_path, (long) entry->mtime);
+			/* File deleted - trigger reload */
+			needs_reload = true;
+			changed_count++;
+		}
+		else if (current_mtime != entry->mtime)
+		{
+			elog(pgstar_log_level, "pgstar: file changed: %s (old: %ld, new: %ld)", 
+				 entry->file_path, (long) entry->mtime, (long) current_mtime);
+			needs_reload = true;
+			changed_count++;
+		}
 	}
 
-	/* Build components directory path */
-	initStringInfo(&components_path);
-	appendStringInfo(&components_path, "%s/components", frontend_path);
-	snprintf(components_dir, sizeof(components_dir), "%s", components_path.data);
-	pgstar_safe_pfree(components_path.data);
-
-	/* Read bundle.json to get list of all component files */
-	json_content = pgstar_bundler_read_file(bundle_json_path);
-	pgstar_safe_pfree(bundle_json_path);
-
-	if (json_content == NULL)
-		return false;
-
-	/* Parse JSON to extract all component file paths and check their mtimes */
-	cursor = json_content;
-	while (*cursor && isspace((unsigned char) *cursor))
-		cursor++;
-
-	if (*cursor != '{')
+	/* Only log summary if files changed */
+	if (changed_count > 0)
 	{
-		pgstar_safe_pfree(json_content);
-		return false;
-	}
-	cursor++; /* skip '{' */
-
-	/* Parse each bundle and check component files */
-	while (*cursor && !needs_reload)
-	{
-		char		bundle_name[256];
-		char	   *filepath;
-		time_t		file_mtime;
-
-		/* Skip whitespace */
-		while (*cursor && isspace((unsigned char) *cursor))
-			cursor++;
-
-		if (*cursor == '}')
-			break;
-
-		if (*cursor == ',')
-		{
-			cursor++;
-			continue;
-		}
-
-		/* Parse bundle name */
-		if (*cursor != '"')
-			break;
-		cursor++;
-
-		if (!pgstar_bundler_parse_json_string(&cursor, bundle_name, sizeof(bundle_name)))
-			break;
-
-		/* Skip whitespace and ':' */
-		while (*cursor && (isspace((unsigned char) *cursor) || *cursor == ':'))
-			cursor++;
-
-		/* Parse array of files */
-		if (*cursor != '[')
-			break;
-		cursor++;
-
-		initStringInfo(&file_list);
-		if (!pgstar_bundler_parse_json_array(&cursor, &file_list))
-		{
-			pgstar_safe_pfree(file_list.data);
-			break;
-		}
-
-		/* Check each component file's mtime - if any is newer than bundle.json mtime, reload */
-		file_token = strtok_r(file_list.data, ",", &saveptr);
-		while (file_token != NULL && !needs_reload)
-		{
-			pgstar_bundler_trim_whitespace(file_token);
-
-			filepath = pgstar_bundler_build_path(components_dir, file_token);
-			file_mtime = pgstar_file_mtime(filepath);
-
-			if (file_mtime > current_json_mtime)
-			{
-				elog(DEBUG1, "pgstar: component file changed: %s (mtime: %ld > bundle.json: %ld)", 
-					 filepath, (long) file_mtime, (long) current_json_mtime);
-				needs_reload = true;
-			}
-
-			pgstar_safe_pfree(filepath);
-			file_token = strtok_r(NULL, ",", &saveptr);
-		}
-
-		pgstar_safe_pfree(file_list.data);
-
-		/* Skip whitespace and closing ']' */
-		while (*cursor && (isspace((unsigned char) *cursor) || *cursor == ']'))
-			cursor++;
+		elog(pgstar_log_level, "pgstar: checked %d file(s), %d changed", checked_count, changed_count);
 	}
 
-	pgstar_safe_pfree(json_content);
 	return needs_reload;
 }
 
 /*
  * Check if bundles need to be reloaded and reload if necessary
- * Called periodically from worker loop (every minute)
+ * Called on every tick (every 10 seconds), but only checks if 1 minute has passed
  */
 void
 pgstar_bundler_check_reload(void)
 {
 	const char *frontend_path;
 	bool		needs_reload = false;
+	time_t		now;
+	time_t		time_since_last_check;
 
 	if (!pgstar_bundles_initialized)
+	{
+		elog(DEBUG1, "pgstar: bundles not initialized, skipping reload check");
 		return;
+	}
+
+	now = time(NULL);
+	
+	/* Check if 1 minute (60 seconds) has passed since last check */
+	if (pgstar_bundles_last_check == 0)
+	{
+		/* First check - initialize timestamp */
+		pgstar_bundles_last_check = now;
+		return;
+	}
+
+	time_since_last_check = now - pgstar_bundles_last_check;
+	if (time_since_last_check < 60)
+	{
+		/* Not yet 1 minute - skip check */
+		return;
+	}
+
+	/* Update last check time */
+	pgstar_bundles_last_check = now;
 
 	/* Get frontend path from GUC */
 	frontend_path = pgstar_frontend_path;
 	if (frontend_path == NULL || frontend_path[0] == '\0')
-		frontend_path = "./pgstar/frontend";
+		frontend_path = "/var/lib/postgresql/pgstar/frontend";
 
-	/* Check if files have changed */
-	needs_reload = pgstar_bundler_check_files_changed(frontend_path, pgstar_bundles);
+	/* Check if files have changed by comparing cached mtimes */
+	needs_reload = pgstar_bundler_check_files_changed();
 
 	if (needs_reload)
 	{
-		elog(pgstar_log_level, "pgstar: reloading bundles due to file changes");
-
 		PG_TRY();
 		{
 			pgstar_bundler_load_bundle_json(frontend_path);
-			elog(pgstar_log_level, "pgstar: bundles reloaded successfully");
+			elog(pgstar_log_level, "pgstar: bundles reloaded");
 		}
 		PG_CATCH();
 		{
@@ -868,6 +865,10 @@ pgstar_bundler_check_reload(void)
 			}
 		}
 		PG_END_TRY();
+	}
+	else
+	{
+		elog(DEBUG1, "pgstar: no bundle changes detected");
 	}
 }
 

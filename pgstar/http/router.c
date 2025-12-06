@@ -54,6 +54,13 @@ pgstar_route_request(const PgstarRequest *req, PgstarResponse *resp)
 		return;
 	}
 	else
+	/* /static/bundle/ paths are served via the bundler */
+	if (strncmp(req->path, "/static/bundle/", 15) == 0)
+	{
+		pgstar_route_bundle(req, resp);
+		return;
+	}
+	else
 	/* /static/js/ and /static/css/ are served via the UI asset routers */
 	if (strncmp(req->path, "/static/js/", 11) == 0)
 	{

@@ -121,26 +121,41 @@ const app = createApp({
         };
     },
     methods: {
+        handleAddConnectionClick() {
+            console.log('handleAddConnectionClick called from template');
+            this.showAddConnection();
+        },
         showAddConnection() {
+            console.log('showAddConnection called');
+            console.log('Current showConnectionModal:', this.showConnectionModal);
             this.editingConnection = null;
             this.showConnectionModal = true;
+            console.log('showConnectionModal set to:', this.showConnectionModal);
+            console.log('editingConnection set to:', this.editingConnection);
         },
         showEditConnection(connection) {
+            console.log('showEditConnection called with:', connection);
             this.editingConnection = connection;
             this.showConnectionModal = true;
+            console.log('showConnectionModal set to:', this.showConnectionModal);
         },
         closeConnectionModal() {
+            console.log('closeConnectionModal called');
             this.showConnectionModal = false;
             this.editingConnection = null;
         }
+    },
+    provide() {
+        return {
+            appInstance: this
+        };
     },
     computed: {
         currentTableSrc() {
             const path = window.location.pathname;
             if (path.endsWith('/files')) return '/api/files';
             if (path.endsWith('/users')) return '/api/pgstar/users';
-            if (path.endsWith('/jobs')) return '/api/jobs';
-            // Default to information schema tables
+            if (path.endsWith('/jobs')) return '/api/pgstar/jobs';
             return '/api/information_schema/tables';
         },
         currentView() {
@@ -240,6 +255,7 @@ app.component('ai', {
 
 // Register connections component
 app.component('connections', {
+  inject: ['appInstance'],
   template: `
     <div class="p-2">
       <data-table-grid 
@@ -247,25 +263,38 @@ app.component('connections', {
         @row-click="handleRowClick">
       </data-table-grid>
       <connection-modal 
-        v-if="$root.showConnectionModal"
-        :connection="$root.editingConnection"
-        @close="$root.closeConnectionModal"
+        v-if="appInstance && appInstance.showConnectionModal"
+        :connection="appInstance.editingConnection"
+        @close="appInstance.closeConnectionModal"
         @save="handleSave">
       </connection-modal>
     </div>
   `,
   methods: {
     handleRowClick(row) {
-      this.$root.showEditConnection(row);
+      console.log('handleRowClick called with row:', row);
+      if (this.appInstance) {
+        this.appInstance.showEditConnection(row);
+      } else {
+        console.error('appInstance not available');
+      }
     },
     handleSave(connectionData) {
+      console.log('handleSave called with:', connectionData);
       // Save logic will be handled by the modal component
-      this.$root.closeConnectionModal();
-      // Refresh the table
-      const tableComponent = this.$children.find(c => c.$options.name === 'data-table-grid');
-      if (tableComponent) {
-        tableComponent.fetchData();
+      if (this.appInstance) {
+        this.appInstance.closeConnectionModal();
       }
+      // Refresh the table by finding the data-table-grid component
+      this.$nextTick(() => {
+        const tableEl = this.$el.querySelector('data-table-grid');
+        if (tableEl && tableEl.__vueParentComponent) {
+          const tableComponent = tableEl.__vueParentComponent.ctx;
+          if (tableComponent && tableComponent.fetchData) {
+            tableComponent.fetchData();
+          }
+        }
+      });
     }
   }
 });
@@ -274,48 +303,71 @@ app.component('connections', {
 app.component('connection-modal', {
   props: ['connection'],
   template: `
-    <div class="modal-overlay" @click.self="$emit(''close'')" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000;">
+    <div class="modal-overlay" @click.self="handleClose" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000;">
       <div class="modal-content" style="background: white; padding: 2rem; border-radius: 8px; max-width: 500px; width: 90%;">
-        <h2>{{ connection ? ''Edit Connection'' : ''Add Connection'' }}</h2>
+        <h2>{{ connection ? "Edit Connection" : "Add Connection" }}</h2>
         <form @submit.prevent="handleSubmit">
           <div style="margin-bottom: 1rem;">
             <label>Name:</label>
-            <input v-model="formData.name" required style="width: 100%; padding: 0.5rem;" />
+            <input type="text" v-model="formData.name" required style="width: 100%; padding: 0.5rem;" />
           </div>
+          
           <div style="margin-bottom: 1rem;">
-            <label>FDW Type:</label>
-            <select v-model="formData.fdw_type" required style="width: 100%; padding: 0.5rem;">
-              <option value="postgres_fdw">postgres_fdw</option>
-              <option value="tds_fdw">tds_fdw</option>
-              <option value="mysql_fdw">mysql_fdw</option>
-            </select>
+            <div style="display: flex; border-bottom: 1px solid #ddd; margin-bottom: 1rem;">
+              <button type="button" @click="setActiveTab(''connection_string'')" :style="getTabStyle(''connection_string'')">
+                Connection String
+              </button>
+              <button type="button" @click="setActiveTab(''connection_details'')" :style="getTabStyle(''connection_details'')">
+                Connection Details
+              </button>
+            </div>
+            
+            <div v-if="activeTab === ''connection_string''">
+              <div style="margin-bottom: 1rem;">
+                <label>Connection String:</label>
+                <input type="text" v-model="formData.connection_string" style="width: 100%; padding: 0.5rem;" />
+              </div>
+            </div>
+            
+            <div v-if="activeTab === ''connection_details''">
+              <div style="margin-bottom: 1rem;">
+                <label>Foreign Data Wrapper Type:</label>
+                <select v-model="formData.fdw_type" required style="width: 100%; padding: 0.5rem;">
+                  <option value="postgres_fdw">postgres_fdw</option>
+                  <option value="tds_fdw">tds_fdw</option>
+                  <option value="mysql_fdw">mysql_fdw</option>
+                  <option value="file_fdw">file_fdw</option>
+                </select>
+              </div>
+              <div style="margin-bottom: 1rem;">
+                <label>Host:</label>
+                <input type="text" v-model="formData.host" style="width: 100%; padding: 0.5rem;" />
+              </div>
+              <div style="margin-bottom: 1rem;">
+                <label>Port:</label>
+                <input type="number" v-model="formData.port" style="width: 100%; padding: 0.5rem;" />
+              </div>
+              <div style="margin-bottom: 1rem;">
+                <label>Database Name:</label>
+                <input type="text" v-model="formData.db_name" style="width: 100%; padding: 0.5rem;" />
+              </div>
+              <div style="margin-bottom: 1rem;">
+                <label>User:</label>
+                <input type="text" v-model="formData.user" style="width: 100%; padding: 0.5rem;" />
+              </div>
+              <div style="margin-bottom: 1rem;">
+                <label>Password (Base64):</label>
+                <input type="password" v-model="formData.pass_b64" style="width: 100%; padding: 0.5rem;" />
+              </div>
+              <div style="margin-bottom: 1rem;">
+                <label>FDW Version (optional):</label>
+                <input type="text" v-model="formData.fdw_version" style="width: 100%; padding: 0.5rem;" />
+              </div>
+            </div>
           </div>
-          <div style="margin-bottom: 1rem;">
-            <label>Host:</label>
-            <input v-model="formData.host" required style="width: 100%; padding: 0.5rem;" />
-          </div>
-          <div style="margin-bottom: 1rem;">
-            <label>Port:</label>
-            <input v-model="formData.port" type="number" required style="width: 100%; padding: 0.5rem;" />
-          </div>
-          <div style="margin-bottom: 1rem;">
-            <label>Database Name:</label>
-            <input v-model="formData.db_name" required style="width: 100%; padding: 0.5rem;" />
-          </div>
-          <div style="margin-bottom: 1rem;">
-            <label>User:</label>
-            <input v-model="formData.user" required style="width: 100%; padding: 0.5rem;" />
-          </div>
-          <div style="margin-bottom: 1rem;">
-            <label>Password (Base64):</label>
-            <input v-model="formData.pass_b64" type="password" style="width: 100%; padding: 0.5rem;" />
-          </div>
-          <div style="margin-bottom: 1rem;">
-            <label>FDW Version (optional):</label>
-            <input v-model="formData.fdw_version" style="width: 100%; padding: 0.5rem;" />
-          </div>
+          
           <div style="display: flex; gap: 1rem; justify-content: flex-end;">
-            <button type="button" @click="$emit(''close'')" style="padding: 0.5rem 1rem;">Cancel</button>
+            <button type="button" @click="handleClose" style="padding: 0.5rem 1rem;">Cancel</button>
             <button type="submit" style="padding: 0.5rem 1rem;">Save</button>
           </div>
         </form>
@@ -324,9 +376,11 @@ app.component('connection-modal', {
   `,
   data() {
     return {
+      activeTab: 'connection_string',
       formData: {
         name: '',
         fdw_type: 'postgres_fdw',
+        connection_string: '',
         host: '',
         port: '',
         db_name: '',
@@ -340,12 +394,15 @@ app.component('connection-modal', {
     connection: {
       immediate: true,
       handler(newVal) {
+        console.log('connection prop changed:', newVal);
         if (newVal) {
           this.formData = { ...newVal };
+          console.log('formData set from connection:', this.formData);
         } else {
           this.formData = {
             name: '',
             fdw_type: 'postgres_fdw',
+            connection_string: '',
             host: '',
             port: '',
             db_name: '',
@@ -353,16 +410,35 @@ app.component('connection-modal', {
             pass_b64: '',
             fdw_version: ''
           };
+          console.log('formData reset to defaults');
         }
       }
     }
   },
   methods: {
+    setActiveTab(tab) {
+      this.activeTab = tab;
+    },
+    getTabStyle(tabName) {
+      return {
+        padding: '0.5rem 1rem',
+        border: 'none',
+        background: this.activeTab === tabName ? '#007bff' : 'transparent',
+        color: this.activeTab === tabName ? 'white' : '#333',
+        cursor: 'pointer'
+      };
+    },
+    handleClose() {
+      console.log('handleClose called in modal');
+      this.$emit('close');
+    },
     async handleSubmit() {
+      console.log('handleSubmit called, formData:', this.formData);
       const url = this.connection 
         ? `/api/pgstar/connections/${this.connection.id}`
         : '/api/pgstar/connections';
       const method = this.connection ? 'PUT' : 'POST';
+      console.log('Making request:', method, url);
       
       try {
         const response = await fetch(url, {
@@ -371,13 +447,24 @@ app.component('connection-modal', {
           body: JSON.stringify(this.formData)
         });
         
-        if (!response.ok) throw new Error('Save failed');
+        console.log('Response status:', response.status);
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error('Response error:', errorText);
+          throw new Error('Save failed: ' + errorText);
+        }
         
+        const result = await response.json();
+        console.log('Save successful:', result);
         this.$emit('save', this.formData);
       } catch (error) {
+        console.error('Error saving connection:', error);
         alert('Error saving connection: ' + error.message);
       }
     }
+  },
+  mounted() {
+    console.log('connection-modal mounted, connection prop:', this.connection);
   }
 });
 
@@ -877,7 +964,7 @@ VALUES (
           <li role="menuitem" tabindex="0">Sher AI</li>
         </ul>
         <ul class="flex-1" role="menubar" v-if="currentView === ''connections''" id="connections-menubar">
-          <li role="menuitem" tabindex="0" @click="showAddConnection">➕ Add Connection</li>
+          <li role="menuitem" tabindex="0" @click="handleAddConnectionClick">➕ Add Connection</li>
         </ul>
         <ul class="flex-1" role="menubar" v-if="currentView === ''table''">
           <li role="menuitem" tabindex="0">Create</li>
@@ -944,12 +1031,13 @@ WHERE pgstar.pages.is_custom = FALSE;
 CREATE TABLE IF NOT EXISTS pgstar.connections (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL,
-    fdw_type TEXT NOT NULL DEFAULT 'postgres_fdw' CHECK (fdw_type IN ('postgres_fdw', 'tds_fdw', 'mysql_fdw')),
-    host TEXT NOT NULL,
-    port INTEGER NOT NULL,
-    db_name TEXT NOT NULL,
-    "user" TEXT NOT NULL,
-    pass_b64 TEXT NOT NULL,
+    fdw_type TEXT NOT NULL DEFAULT 'postgres_fdw' CHECK (fdw_type IN ('postgres_fdw', 'tds_fdw', 'mysql_fdw', 'file_fdw')),
+    connection_string TEXT DEFAULT '',
+    host TEXT DEFAULT '',
+    port INTEGER DEFAULT NULL,
+    db_name TEXT DEFAULT '',
+    "user" TEXT DEFAULT '',
+    pass_b64 TEXT DEFAULT '',
     fdw_version TEXT DEFAULT '',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

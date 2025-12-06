@@ -11,6 +11,7 @@ int pgstar_log_level = INFO;
 char *pgstar_database = "postgres";
 char *pgstar_user = "pgstar";
 int pgstar_ui_cache_ttl = 10;
+char *pgstar_frontend_path = NULL;
 
 static const struct config_enum_entry pgstar_log_level_options[] = {
 	{"error", ERROR, false},
@@ -84,6 +85,18 @@ pgstar_define_gucs(void)
 		0,
 		3600,
 		PGC_SIGHUP,
+		0,
+		NULL,
+		NULL,
+		NULL);
+
+	DefineCustomStringVariable(
+		"pgstar.frontend_path",
+		"Path to frontend directory containing bundle.json and components/.",
+		"Can be relative (e.g., ./pgstar/frontend) or absolute (e.g., /var/lib/postgresql/pgstar/frontend). Defaults to /var/lib/postgresql/pgstar/frontend.",
+		&pgstar_frontend_path,
+		"/var/lib/postgresql/pgstar/frontend",
+		PGC_SUSET,
 		0,
 		NULL,
 		NULL,

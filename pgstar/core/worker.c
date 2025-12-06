@@ -5,6 +5,7 @@
 #include "core/worker.h"
 #include "pgstar.h"
 #include "tcp/socket.h"
+#include "ui/bundler.h"
 
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
@@ -65,6 +66,8 @@ pgstar_worker(Datum main_arg)
 		 * synchronous creation during CREATE EXTENSION. The function is now a no-op.
 		 * Other important tables (users, jobs, etc.) remain in C code as they
 		 * require runtime initialization logic. */
+		/* Initialize frontend bundles */
+		pgstar_bundler_init();
 	}
 	PG_CATCH();
 	{
@@ -123,9 +126,13 @@ pgstar_worker(Datum main_arg)
 		if (rc & WL_TIMEOUT)
 		{
 			static int tick_count = 0;
-			// tick_count++;
-			if (tick_count++ % 6 == 0) /* Log every minute (6 * 10s) */
+			tick_count++;
+			if (tick_count % 6 == 0) /* Log heartbeat every minute (6 * 10s) */
+			{
 				elog(pgstar_log_level, "pgstar: http worker heartbeat (tick %d)", tick_count);
+			}
+			/* Check bundles on every tick (check_reload handles 1-minute expiry internally) */
+			pgstar_bundler_check_reload();
 		}
 	}
 

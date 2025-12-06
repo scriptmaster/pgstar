@@ -186,4 +186,4 @@ bump:
 	echo "Version bump complete! New version: $$NEW_VERSION"; \
 	echo "Rebuilding extension with new version..."; \
 	cd "$$PGSTAR_DIR" && make clean && make && make install'
-	@make auto
+	# @make auto

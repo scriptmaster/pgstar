@@ -10,6 +10,7 @@
 #include "utils/builtins.h"
 #include "utils/fmgrprotos.h"
 #include "utils/json.h"
+#include "utils/jsonb.h"
 #include "utils/snapmgr.h"
 
 #include <string.h>
@@ -672,15 +673,266 @@ pgstar_api_connections(const PgstarRequest *req,
 					   int nseg, const char *segs[],
 					   PgstarResponse *resp)
 {
-	/* GET requests are handled by the generic table handler */
-	/* POST and PUT need special handling - for now return method not allowed */
-	/* TODO: Implement POST/PUT for connections */
-	if (pg_strcasecmp(req->method, "POST") == 0 || pg_strcasecmp(req->method, "PUT") == 0)
+	MemoryContext caller_ctx = CurrentMemoryContext;
+	MemoryContext old_ctx;
+	char	   *resp_json = NULL;
+	StringInfoData sql;
+	StringInfoData body_buf;
+
+	if (pg_strcasecmp(req->method, "POST") == 0)
 	{
-		resp->status_code = 501;
-		resp->status_text = "Not Implemented";
-		resp->content_type = "application/json";
-		resp->body = pstrdup("{\"error\":\"POST/PUT for connections not yet implemented. Use /api/exec endpoint for now.\"}\n");
+		/* POST: Insert new connection */
+		if (!req->body || req->body_len == 0)
+		{
+			resp->status_code = 400;
+			resp->status_text = "Bad Request";
+			resp->content_type = "application/json";
+			resp->body = pstrdup("{\"error\":\"missing request body\"}\n");
+			return;
+		}
+
+		PG_TRY();
+		{
+			int			ret;
+			TupleDesc tupdesc;
+			uint64		tuple_count;
+
+			SetCurrentStatementStartTimestamp();
+			StartTransactionCommand();
+			PushActiveSnapshot(GetTransactionSnapshot());
+
+			ret = SPI_connect();
+			if (ret != SPI_OK_CONNECT)
+				ereport(ERROR,
+						(errmsg("pgstar: SPI_connect failed: %d", ret)));
+
+			/* Build SQL using jsonb functions to parse the body */
+			initStringInfo(&body_buf);
+			appendStringInfo(&body_buf, "%.*s", (int) req->body_len, req->body);
+
+			{
+				Datum		quoted_body;
+				char	   *quoted_body_str;
+
+				quoted_body = DirectFunctionCall1(quote_literal,
+												   CStringGetDatum(body_buf.data));
+				quoted_body_str = DatumGetCString(quoted_body);
+
+				initStringInfo(&sql);
+				appendStringInfo(&sql,
+								 "INSERT INTO pgstar.connections (name, fdw_type, connection_string, host, port, db_name, \"user\", pass_b64, fdw_version) "
+								 "SELECT "
+								 "  (body->>'name')::text, "
+								 "  COALESCE((body->>'fdw_type')::text, 'postgres_fdw'), "
+								 "  COALESCE((body->>'connection_string')::text, ''), "
+								 "  COALESCE((body->>'host')::text, ''), "
+								 "  CASE WHEN (body->>'port') IS NOT NULL AND (body->>'port')::text != '' THEN ((body->>'port')::text)::integer ELSE NULL END, "
+								 "  COALESCE((body->>'db_name')::text, ''), "
+								 "  COALESCE((body->>'user')::text, ''), "
+								 "  COALESCE((body->>'pass_b64')::text, ''), "
+								 "  COALESCE((body->>'fdw_version')::text, '') "
+								 "FROM (SELECT %s::jsonb AS body) AS j "
+								 "RETURNING id",
+								 quoted_body_str);
+			}
+
+			ret = SPI_execute(sql.data, false, 0);
+			if (ret != SPI_OK_INSERT && ret != SPI_OK_INSERT_RETURNING)
+				ereport(ERROR,
+						(errmsg("pgstar: connections insert failed: %d", ret)));
+
+			tuple_count = SPI_processed;
+			if (tuple_count > 0 && SPI_tuptable != NULL)
+			{
+				HeapTuple	tup = SPI_tuptable->vals[0];
+				TupleDesc	tupdesc = SPI_tuptable->tupdesc;
+				bool		isnull;
+				Datum		id_datum;
+				int32		id;
+
+				id_datum = SPI_getbinval(tup, tupdesc, 1, &isnull);
+				if (!isnull)
+					id = DatumGetInt32(id_datum);
+				else
+					id = 0;
+
+				old_ctx = MemoryContextSwitchTo(caller_ctx);
+				resp_json = psprintf("{\"success\":true,\"id\":%d}\n", id);
+				MemoryContextSwitchTo(old_ctx);
+			}
+			else
+			{
+				old_ctx = MemoryContextSwitchTo(caller_ctx);
+				resp_json = pstrdup("{\"success\":true}\n");
+				MemoryContextSwitchTo(old_ctx);
+			}
+
+			pgstar_safe_pfree(sql.data);
+			pgstar_safe_pfree(body_buf.data);
+
+			SPI_finish();
+			PopActiveSnapshot();
+			CommitTransactionCommand();
+
+			resp->status_code = 201;
+			resp->status_text = "Created";
+			resp->content_type = "application/json";
+			resp->body = resp_json;
+		}
+		PG_CATCH();
+		{
+			ErrorData  *edata = CopyErrorData();
+
+			FlushErrorState();
+
+			if (IsTransactionState())
+			{
+				SPI_finish();
+				PopActiveSnapshot();
+				AbortCurrentTransaction();
+			}
+
+			if (sql.data)
+				pgstar_safe_pfree(sql.data);
+			if (body_buf.data)
+				pgstar_safe_pfree(body_buf.data);
+
+			old_ctx = MemoryContextSwitchTo(caller_ctx);
+
+			resp->status_code = 500;
+			resp->status_text = "Internal Server Error";
+			resp->content_type = "application/json";
+			resp->body = psprintf("{\"error\":\"%s\"}\n",
+								  edata ? edata->message : "insert failed");
+
+			MemoryContextSwitchTo(old_ctx);
+
+			if (edata)
+				FreeErrorData(edata);
+		}
+		PG_END_TRY();
+		return;
+	}
+	else if (pg_strcasecmp(req->method, "PUT") == 0 && nseg == 4)
+	{
+		/* PUT: Update connection by ID */
+		int			conn_id = atoi(segs[3]);
+
+		if (conn_id <= 0)
+		{
+			resp->status_code = 400;
+			resp->status_text = "Bad Request";
+			resp->content_type = "application/json";
+			resp->body = pstrdup("{\"error\":\"invalid connection id\"}\n");
+			return;
+		}
+
+		if (!req->body || req->body_len == 0)
+		{
+			resp->status_code = 400;
+			resp->status_text = "Bad Request";
+			resp->content_type = "application/json";
+			resp->body = pstrdup("{\"error\":\"missing request body\"}\n");
+			return;
+		}
+
+		PG_TRY();
+		{
+			int			ret;
+
+			SetCurrentStatementStartTimestamp();
+			StartTransactionCommand();
+			PushActiveSnapshot(GetTransactionSnapshot());
+
+			ret = SPI_connect();
+			if (ret != SPI_OK_CONNECT)
+				ereport(ERROR,
+						(errmsg("pgstar: SPI_connect failed: %d", ret)));
+
+			initStringInfo(&body_buf);
+			appendStringInfo(&body_buf, "%.*s", (int) req->body_len, req->body);
+
+			{
+				Datum		quoted_body;
+				char	   *quoted_body_str;
+
+				quoted_body = DirectFunctionCall1(quote_literal,
+												   CStringGetDatum(body_buf.data));
+				quoted_body_str = DatumGetCString(quoted_body);
+
+				initStringInfo(&sql);
+				appendStringInfo(&sql,
+								 "UPDATE pgstar.connections SET "
+								 "  name = COALESCE(NULLIF((body->>'name')::text, ''), name), "
+								 "  fdw_type = COALESCE(NULLIF((body->>'fdw_type')::text, ''), fdw_type), "
+								 "  connection_string = COALESCE(NULLIF((body->>'connection_string')::text, ''), connection_string), "
+								 "  host = COALESCE(NULLIF((body->>'host')::text, ''), host), "
+								 "  port = CASE WHEN (body->>'port') IS NOT NULL AND (body->>'port')::text != '' THEN ((body->>'port')::text)::integer ELSE port END, "
+								 "  db_name = COALESCE(NULLIF((body->>'db_name')::text, ''), db_name), "
+								 "  \"user\" = COALESCE(NULLIF((body->>'user')::text, ''), \"user\"), "
+								 "  pass_b64 = COALESCE(NULLIF((body->>'pass_b64')::text, ''), pass_b64), "
+								 "  fdw_version = COALESCE(NULLIF((body->>'fdw_version')::text, ''), fdw_version), "
+								 "  updated_at = CURRENT_TIMESTAMP "
+								 "FROM (SELECT %s::jsonb AS body) AS j "
+								 "WHERE id = %d "
+								 "RETURNING id",
+								 quoted_body_str,
+								 conn_id);
+			}
+
+			ret = SPI_execute(sql.data, false, 0);
+			if (ret != SPI_OK_UPDATE)
+				ereport(ERROR,
+						(errmsg("pgstar: connections update failed: %d", ret)));
+
+			old_ctx = MemoryContextSwitchTo(caller_ctx);
+			resp_json = pstrdup("{\"success\":true}\n");
+			MemoryContextSwitchTo(old_ctx);
+
+			pgstar_safe_pfree(sql.data);
+			pgstar_safe_pfree(body_buf.data);
+
+			SPI_finish();
+			PopActiveSnapshot();
+			CommitTransactionCommand();
+
+			resp->status_code = 200;
+			resp->status_text = "OK";
+			resp->content_type = "application/json";
+			resp->body = resp_json;
+		}
+		PG_CATCH();
+		{
+			ErrorData  *edata = CopyErrorData();
+
+			FlushErrorState();
+
+			if (IsTransactionState())
+			{
+				SPI_finish();
+				PopActiveSnapshot();
+				AbortCurrentTransaction();
+			}
+
+			if (sql.data)
+				pgstar_safe_pfree(sql.data);
+			if (body_buf.data)
+				pgstar_safe_pfree(body_buf.data);
+
+			old_ctx = MemoryContextSwitchTo(caller_ctx);
+
+			resp->status_code = 500;
+			resp->status_text = "Internal Server Error";
+			resp->content_type = "application/json";
+			resp->body = psprintf("{\"error\":\"%s\"}\n",
+								  edata ? edata->message : "update failed");
+
+			MemoryContextSwitchTo(old_ctx);
+
+			if (edata)
+				FreeErrorData(edata);
+		}
+		PG_END_TRY();
 		return;
 	}
 	
